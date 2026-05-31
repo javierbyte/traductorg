@@ -1,0 +1,116 @@
+html {
+  margin: 0;
+  padding: 0;
+  scrollbar-width: none;
+  font-size: 16px;
+}
+html::-webkit-scrollbar {
+  display: none;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background: black;
+  font:
+    0.875rem "Open Sans",
+    "Arial",
+    sans-serif;
+}
+
+video {
+  display: none;
+}
+
+canvas.draw {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  image-rendering: pixelated;
+}
+
+#intro {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 2000;
+  text-align: center;
+  max-width: 400px;
+  width: calc(100vw - 48px);
+}
+
+#intro code {
+  font-family: "SF Mono", "Menlo", "Courier New", Courier, monospace;
+  font-size: 1.25rem;
+  color: white;
+  letter-spacing: -0.5px;
+}
+
+#intro p {
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 1rem;
+  line-height: 1.25;
+  margin: 12px 0 24px;
+}
+
+#share-btn {
+  padding: 0.875rem 1.5rem;
+  font-size: 0.875rem;
+  line-height: 1;
+  cursor: pointer;
+  background: transparent;
+  color: white;
+  border: 1px solid white;
+  font-weight: 700;
+  font-family: system-ui, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+#translate-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 900;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.translate-box {
+  position: absolute;
+  backdrop-filter: blur(32px) brightness(1.25);
+  background: transparent;
+  color: black;
+  font-family:
+    system-ui,
+    -apple-system,
+    sans-serif;
+  line-height: 1;
+  padding: 1px 3px;
+  box-sizing: border-box;
+  border-radius: 4px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-align: center;
+}
+
+.translate-status {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  color: rgba(255, 255, 255, 0.8);
+  font-family:
+    system-ui,
+    -apple-system,
+    sans-serif;
+  font-size: 13px;
+  padding: 6px 14px;
+  border-radius: 6px;
+  pointer-events: none;
+}
