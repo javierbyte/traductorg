@@ -19,17 +19,37 @@ let _trOcrW = 0;
 let _trOcrH = 0;
 let _trLastDispW = 0;
 let _trLastDispH = 0;
+let _trSession = 0;
+let _trMeasureCtx = null;
+let _trDiffCanvas = null;
+let _trDiffCtx = null;
+let _trPrevDiffData = null;
 
 const TR_OCR_SCALE = 0.5; // OCR at half the feed resolution (retina capture is 2×, so this is ~CSS size)
 const TR_OCR_COOLDOWN = 1000; // ms between OCR passes (0 = run back-to-back)
 const TR_CONFIDENCE_MIN = 0.4;
 const TR_TEXT_RE = /\p{Letter}{2,}/u;
+const TR_CACHE_MAX = 1000;
+const TR_DIFF_W = 64;
+const TR_DIFF_H = 36;
+const TR_DIFF_THRESHOLD = 4; // mean per-channel abs diff (0-255) below which the frame counts as unchanged
+const TR_FONT_FAMILY = "system-ui, -apple-system, sans-serif"; // must match .translate-box
 const PADDLE_ASSETS = "https://cdn.jsdelivr.net/npm/paddleocr-browser/dist/";
 
 function _trIsText(str) {
   if (!TR_TEXT_RE.test(str)) return false;
   const letters = str.replace(/[^\p{Letter}]/gu, "").length;
   return letters / str.length >= 0.5;
+}
+
+function _trAcceptItem(item) {
+  if (item.mean < TR_CONFIDENCE_MIN) return false;
+  const text = item.text.trim();
+  return !!text && _trIsText(text);
+}
+
+function _trFilterItems(result) {
+  return result && result.src ? result.src.filter(_trAcceptItem) : [];
 }
 
 // Compute axis-aligned rect + rotation from a quadrilateral box [[x,y], ...],
@@ -83,6 +103,13 @@ async function _trInitPaddle(statusEl) {
 }
 
 function initTranslateFilter(overlayEl) {
+  // Idempotent: on re-share, reuse the existing container, models, and
+  // translator instead of re-initializing everything.
+  if (_trOverlay) {
+    showTranslateFilter();
+    return true;
+  }
+
   _trOverlay = overlayEl;
   _trFeedCanvas = document.createElement("canvas");
   _trFeedCtx = _trFeedCanvas.getContext("2d");
@@ -103,8 +130,8 @@ function initTranslateFilter(overlayEl) {
     .then(() => {
       if (statusEl) statusEl.textContent = "OCR ready — scanning...";
       setTimeout(() => {
-        const s = _trOverlay.querySelector(".translate-status");
-        if (s && s.textContent === "OCR ready — scanning...") s.remove();
+        if (statusEl.textContent === "OCR ready — scanning...")
+          statusEl.textContent = "";
       }, 2000);
     })
     .catch((e) => {
@@ -153,7 +180,7 @@ async function _trInitTranslator(statusEl) {
     });
 
     console.log("Translator ready (de→en)");
-    if (statusEl && _trReady) statusEl.textContent = "OCR ready — scanning...";
+    if (statusEl && _trReady) statusEl.textContent = "";
     // Re-translate anything already detected before the translator was ready.
     if (_trResults) _trTranslateResults(_trResults);
   } catch (e) {
@@ -166,10 +193,47 @@ function showTranslateFilter() {
   _trResults = null;
   _trResultsDirty = false;
   _trLastOcrTime = 0;
-  _trCache.clear();
-  _trCacheVersion = 0;
-  _trRenderedCacheVersion = 0;
+  _trRenderedCacheVersion = _trCacheVersion;
   if (_trBoxContainer) _trBoxContainer.innerHTML = "";
+}
+
+// Tear down session state when sharing stops. Bumps the session counter so
+// in-flight ocr()/translate() promises from the old session are discarded.
+// The translation cache survives — its keys are pure text, still valid.
+function resetTranslateFilter() {
+  _trSession++;
+  _trBusy = false;
+  _trResults = null;
+  _trResultsDirty = false;
+  _trLastOcrTime = 0;
+  _trPrevDiffData = null;
+  if (_trBoxContainer) _trBoxContainer.innerHTML = "";
+}
+
+// Returns true when the frame differs enough from the last checked frame to
+// be worth a new OCR pass. Compares tiny downscaled snapshots so it's ~free.
+function _trFrameChanged(sourceCanvas) {
+  if (!_trDiffCtx) {
+    _trDiffCanvas = document.createElement("canvas");
+    _trDiffCanvas.width = TR_DIFF_W;
+    _trDiffCanvas.height = TR_DIFF_H;
+    _trDiffCtx = _trDiffCanvas.getContext("2d", { willReadFrequently: true });
+  }
+
+  _trDiffCtx.drawImage(sourceCanvas, 0, 0, TR_DIFF_W, TR_DIFF_H);
+  const cur = _trDiffCtx.getImageData(0, 0, TR_DIFF_W, TR_DIFF_H).data;
+
+  const prev = _trPrevDiffData;
+  _trPrevDiffData = cur;
+  if (!prev) return true;
+
+  let diff = 0;
+  for (let i = 0; i < cur.length; i += 4) {
+    diff += Math.abs(cur[i] - prev[i]);
+    diff += Math.abs(cur[i + 1] - prev[i + 1]);
+    diff += Math.abs(cur[i + 2] - prev[i + 2]);
+  }
+  return diff / (TR_DIFF_W * TR_DIFF_H * 3) > TR_DIFF_THRESHOLD;
 }
 
 function _trTriggerOcr(sourceCanvas) {
@@ -180,7 +244,14 @@ function _trTriggerOcr(sourceCanvas) {
     _trLastOcrTime === 0 || now - _trLastOcrTime > TR_OCR_COOLDOWN;
   if (!shouldRun) return;
 
+  if (!_trFrameChanged(sourceCanvas)) {
+    // Re-arm the cooldown so the diff itself runs at most once per interval.
+    _trLastOcrTime = now;
+    return;
+  }
+
   _trBusy = true;
+  const session = _trSession;
 
   // OCR at half the source-frame resolution to keep inference fast.
   const sw = sourceCanvas.width;
@@ -195,11 +266,10 @@ function _trTriggerOcr(sourceCanvas) {
   _trOcrW = ocrW;
   _trOcrH = ocrH;
 
-  console.log("OCR: running on", ocrW, "x", ocrH, "canvas");
   _trOcrInstance
     .ocr(_trFeedCanvas)
     .then((result) => {
-      console.log("OCR result:", result);
+      if (session !== _trSession) return;
       _trResults = result;
       _trResultsDirty = true;
       _trLastOcrTime = performance.now();
@@ -209,49 +279,72 @@ function _trTriggerOcr(sourceCanvas) {
     })
     .catch((e) => {
       console.error("OCR failed:", e);
+      if (session !== _trSession) return;
       _trBusy = false;
     });
 }
 
-function _trTranslateResults(result) {
-  if (!_trTranslator || !result || !result.src) return;
+async function _trTranslateResults(result) {
+  if (!_trTranslator) return;
+  const session = _trSession;
 
-  for (const item of result.src) {
-    const text = item.text.trim();
-    if (!text || !_trIsText(text) || _trCache.has(text)) continue;
+  const pending = [
+    ...new Set(_trFilterItems(result).map((it) => it.text.trim())),
+  ].filter((t) => !_trCache.has(t));
+  if (!pending.length) return;
 
-    _trTranslator
-      .translate(text)
-      .then((translated) => {
-        _trCache.set(text, translated);
-        _trCacheVersion++;
-      })
-      .catch((e) => {
-        console.warn("translate failed for", JSON.stringify(text), e);
-      });
-  }
+  await Promise.allSettled(
+    pending.map((t) =>
+      _trTranslator
+        .translate(t)
+        .then((translated) => {
+          if (session !== _trSession) return;
+          _trCache.set(t, translated);
+          if (_trCache.size > TR_CACHE_MAX)
+            _trCache.delete(_trCache.keys().next().value);
+        })
+        .catch((e) => {
+          console.warn("translate failed for", JSON.stringify(t), e);
+        }),
+    ),
+  );
+
+  // One version bump per OCR pass: all new boxes flip to English together
+  // instead of one at a time.
+  if (session === _trSession) _trCacheVersion++;
 }
 
 function _trRebuildBoxes(dispW, dispH) {
-  if (!_trBoxContainer || !_trResults || !_trResults.src) return;
+  if (!_trBoxContainer || !_trResults) return;
 
   const ocrW = _trOcrW || 1;
   const ocrH = _trOcrH || 1;
 
+  if (!_trMeasureCtx) {
+    _trMeasureCtx = document.createElement("canvas").getContext("2d");
+  }
+
   let html = "";
 
-  for (const item of _trResults.src) {
-    if (item.mean < TR_CONFIDENCE_MIN) continue;
+  for (const item of _trFilterItems(_trResults)) {
     const text = item.text.trim();
-    if (!text || !_trIsText(text)) continue;
-
     const r = _trQuadToRect(item.box, ocrW, ocrH, dispW, dispH);
     const ocrSize = Math.max(8, Math.min(r.boxH * 0.75, 32));
-    const fontSize = 20 * (1 / 3) + ocrSize * (2 / 3);
+    let fontSize = 20 * (1 / 3) + ocrSize * (2 / 3);
 
     const extraTranslateBoxPadding = 6;
 
     const displayText = _trCache.get(text) || text;
+
+    // Shrink-to-fit: measure off-DOM and scale the font down so longer
+    // translations stay on one line inside the source quad.
+    _trMeasureCtx.font = fontSize + "px " + TR_FONT_FAMILY;
+    const innerWidth = r.width + extraTranslateBoxPadding * 2 - 6;
+    const measured = _trMeasureCtx.measureText(displayText).width;
+    if (measured > innerWidth && measured > 0) {
+      fontSize = Math.max(9, (fontSize * innerWidth) / measured);
+    }
+
     const escaped = displayText
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")

@@ -93,6 +93,7 @@ canvas.draw {
   border-radius: 4px;
   overflow: hidden;
   white-space: nowrap;
+  text-overflow: ellipsis;
   text-align: center;
 }
 
@@ -113,4 +114,8 @@ canvas.draw {
   padding: 6px 14px;
   border-radius: 6px;
   pointer-events: none;
+}
+
+.translate-status:empty {
+  display: none;
 }

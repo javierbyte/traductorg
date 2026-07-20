@@ -6,8 +6,9 @@ Live German → English translation overlaid on a screen-shared video feed.
 
 1. **Screen capture.** The page asks to share a screen, window, or tab.
 2. **OCR the whole frame.** Each captured frame is drawn to a canvas and, on a
-   periodic cooldown, run through PaddleOCR (via [esearch-ocr](https://www.npmjs.com/package/esearch-ocr),
-   OpenCV.js + onnxruntime-web in the browser).
+   periodic cooldown, run through PaddleOCR (via [esearch-ocr](https://www.npmjs.com/package/esearch-ocr)
+   on onnxruntime-web in the browser). Passes are skipped when a downscaled
+   frame diff shows nothing changed on screen.
 3. **Translate.** Detected German text is translated to English on-device using
    the Chrome built-in [Translator API](https://developer.chrome.com/docs/ai/translator-api),
    with results cached per string.

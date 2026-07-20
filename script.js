@@ -4,15 +4,17 @@ const translateOverlay = document.getElementById("translate-overlay");
 const shareBtn = document.getElementById("share-btn");
 
 let isPlaying = false;
+let drawFrameHandle = 0;
+let ocrRafId = 0;
 
 // Position the canvas + overlay as a single letterboxed box centered in the
 // window, preserving the feed's aspect ratio.
-function layoutDisplay(cssW, cssH) {
+function layoutDisplay(srcW, srcH) {
   const winW = window.innerWidth;
   const winH = window.innerHeight;
-  const scale = Math.min(winW / cssW, winH / cssH);
-  const dispW = Math.round(cssW * scale);
-  const dispH = Math.round(cssH * scale);
+  const scale = Math.min(winW / srcW, winH / srcH);
+  const dispW = Math.round(srcW * scale);
+  const dispH = Math.round(srcH * scale);
   const left = Math.round((winW - dispW) / 2);
   const top = Math.round((winH - dispH) / 2);
 
@@ -26,90 +28,111 @@ function layoutDisplay(cssW, cssH) {
   return { dispW, dispH };
 }
 
-shareBtn.addEventListener(
-  "click",
-  function () {
-    if (isPlaying) return;
-    isPlaying = true;
-    document.getElementById("intro").style.display = "none";
+function stopSession() {
+  if (!isPlaying) return;
+  isPlaying = false;
 
-    navigator.mediaDevices
-      .getDisplayMedia({
-        video: {
-          width: { ideal: screen.width * window.devicePixelRatio },
-          height: { ideal: screen.height * window.devicePixelRatio },
-          frameRate: { ideal: 60 },
-        },
-        audio: false,
-      })
-      .then((stream) => {
-        videoEl.srcObject = stream;
-        videoEl.play();
+  if (drawFrameHandle && videoEl.cancelVideoFrameCallback) {
+    videoEl.cancelVideoFrameCallback(drawFrameHandle);
+  }
+  cancelAnimationFrame(ocrRafId);
+  drawFrameHandle = 0;
+  ocrRafId = 0;
 
-        // Boot the OCR + translation engine.
-        initTranslateFilter(translateOverlay);
-        showTranslateFilter();
+  if (videoEl.srcObject) {
+    videoEl.srcObject.getTracks().forEach((t) => t.stop());
+    videoEl.srcObject = null;
+  }
+  // Drop the stale frame so it doesn't flash on the next share.
+  canvasEl.width = 0;
+  canvasEl.height = 0;
 
-        const ctx = canvasEl.getContext("2d");
-        ctx.imageSmoothingEnabled = false;
+  resetTranslateFilter();
+  document.getElementById("intro").style.display = "";
+}
 
-        // Latest displayed-canvas size, written by the draw loop and read by the
-        // OCR loop so the two run independently.
-        let dispW = 0;
-        let dispH = 0;
+function startSession(stream) {
+  videoEl.srcObject = stream;
+  videoEl.play();
 
-        // --- Draw loop: paint the feed as fast as it is delivered ---
-        function drawFrame() {
-          if (videoEl.videoWidth === 0 || videoEl.readyState < 2) return;
+  stream
+    .getVideoTracks()[0]
+    .addEventListener("ended", stopSession, { once: true });
 
-          // Chrome captures at native resolution (dpr×), Safari at 1×.
-          const dpr =
-            videoEl.videoWidth / screen.width || window.devicePixelRatio;
+  // Boot (or reuse) the OCR + translation engine.
+  initTranslateFilter(translateOverlay);
+  showTranslateFilter();
 
-          if (
-            canvasEl.width !== videoEl.videoWidth ||
-            canvasEl.height !== videoEl.videoHeight
-          ) {
-            canvasEl.width = videoEl.videoWidth;
-            canvasEl.height = videoEl.videoHeight;
-          }
+  const ctx = canvasEl.getContext("2d");
+  ctx.imageSmoothingEnabled = false;
 
-          ctx.drawImage(videoEl, 0, 0);
+  // Latest displayed-canvas size, written by the draw loop and read by the
+  // OCR loop so the two run independently.
+  let dispW = 0;
+  let dispH = 0;
 
-          // Letterbox-fit the feed into the window and align the overlay.
-          ({ dispW, dispH } = layoutDisplay(
-            videoEl.videoWidth / dpr,
-            videoEl.videoHeight / dpr,
-          ));
-        }
+  // --- Draw loop: paint the feed as fast as it is delivered ---
+  function drawFrame() {
+    if (!isPlaying) return;
+    if (videoEl.videoWidth === 0 || videoEl.readyState < 2) return;
 
-        if ("requestVideoFrameCallback" in HTMLVideoElement.prototype) {
-          function onVideoFrame() {
-            drawFrame();
-            videoEl.requestVideoFrameCallback(onVideoFrame);
-          }
-          videoEl.requestVideoFrameCallback(onVideoFrame);
-        } else {
-          function rafDraw() {
-            drawFrame();
-            requestAnimationFrame(rafDraw);
-          }
-          requestAnimationFrame(rafDraw);
-        }
+    if (
+      canvasEl.width !== videoEl.videoWidth ||
+      canvasEl.height !== videoEl.videoHeight
+    ) {
+      canvasEl.width = videoEl.videoWidth;
+      canvasEl.height = videoEl.videoHeight;
+    }
 
-        // --- OCR loop: scan + overlay on its own cadence, off the draw path ---
-        function ocrLoop() {
-          if (canvasEl.width > 0 && dispW > 0) {
-            renderTranslateFrame(canvasEl, dispW, dispH);
-          }
-          requestAnimationFrame(ocrLoop);
-        }
-        requestAnimationFrame(ocrLoop);
-      })
-      .catch((err) => {
-        console.error("getDisplayMedia failed:", err);
-        isPlaying = false;
-      });
-  },
-  false,
-);
+    ctx.drawImage(videoEl, 0, 0);
+
+    // Letterbox-fit the feed into the window and align the overlay.
+    ({ dispW, dispH } = layoutDisplay(videoEl.videoWidth, videoEl.videoHeight));
+  }
+
+  if ("requestVideoFrameCallback" in HTMLVideoElement.prototype) {
+    function onVideoFrame() {
+      drawFrame();
+      if (isPlaying) drawFrameHandle = videoEl.requestVideoFrameCallback(onVideoFrame);
+    }
+    drawFrameHandle = videoEl.requestVideoFrameCallback(onVideoFrame);
+  } else {
+    function rafDraw() {
+      drawFrame();
+      if (isPlaying) drawFrameHandle = requestAnimationFrame(rafDraw);
+    }
+    drawFrameHandle = requestAnimationFrame(rafDraw);
+  }
+
+  // --- OCR loop: scan + overlay on its own cadence, off the draw path ---
+  function ocrLoop() {
+    if (!isPlaying) return;
+    if (canvasEl.width > 0 && dispW > 0) {
+      renderTranslateFrame(canvasEl, dispW, dispH);
+    }
+    ocrRafId = requestAnimationFrame(ocrLoop);
+  }
+  ocrRafId = requestAnimationFrame(ocrLoop);
+}
+
+shareBtn.addEventListener("click", function () {
+  if (isPlaying) return;
+  isPlaying = true;
+  document.getElementById("intro").style.display = "none";
+
+  navigator.mediaDevices
+    .getDisplayMedia({
+      video: {
+        width: { ideal: screen.width * window.devicePixelRatio },
+        height: { ideal: screen.height * window.devicePixelRatio },
+        frameRate: { ideal: 60 },
+      },
+      audio: false,
+    })
+    .then(startSession)
+    .catch((err) => {
+      console.error("getDisplayMedia failed:", err);
+      isPlaying = false;
+      document.getElementById("intro").style.display = "";
+    });
+});
