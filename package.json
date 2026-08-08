@@ -4,6 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "test": "node --test",
+    "check": "node --check script.js && node --check ocr.js && node --check ocr-worker.js && node --test"
   }
 }

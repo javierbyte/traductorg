@@ -1,138 +1,203 @@
-const videoEl = document.querySelector("video");
-const canvasEl = document.querySelector("canvas.draw");
+import { TranslationSession } from "./ocr.js";
+
+const videoElement = document.querySelector("video");
 const translateOverlay = document.getElementById("translate-overlay");
-const shareBtn = document.getElementById("share-btn");
+const shareButton = document.getElementById("share-btn");
+const languageBar = document.getElementById("lang-bar");
+const intro = document.getElementById("intro");
+
+const translationSession = new TranslationSession({
+  video: videoElement,
+  overlay: translateOverlay,
+});
 
 let isPlaying = false;
-let drawFrameHandle = 0;
-let ocrRafId = 0;
+let lastLayout = "";
 
-// Position the canvas + overlay as a single letterboxed box centered in the
-// window, preserving the feed's aspect ratio.
-function layoutDisplay(srcW, srcH) {
-  const winW = window.innerWidth;
-  const winH = window.innerHeight;
-  const scale = Math.min(winW / srcW, winH / srcH);
-  const dispW = Math.round(srcW * scale);
-  const dispH = Math.round(srcH * scale);
-  const left = Math.round((winW - dispW) / 2);
-  const top = Math.round((winH - dispH) / 2);
+// Only languages with an installed OCR recognition model are offered. Latin
+// languages share the smaller Latin model; Chinese uses the Chinese+English
+// model. Target choices mirror sources so inversion is always valid.
+const LANGUAGES = [
+  ["de", "German"],
+  ["en", "English"],
+  ["es", "Spanish"],
+  ["fr", "French"],
+  ["it", "Italian"],
+  ["pt", "Portuguese"],
+  ["nl", "Dutch"],
+  ["zh", "Chinese"],
+];
+const STORAGE_SOURCE = "traducto.srcLang";
+const STORAGE_TARGET = "traducto.tgtLang";
 
-  for (const el of [canvasEl, translateOverlay]) {
-    el.style.left = left + "px";
-    el.style.top = top + "px";
-    el.style.width = dispW + "px";
-    el.style.height = dispH + "px";
+function loadStoredLanguage(key, fallback) {
+  try {
+    const value = localStorage.getItem(key);
+    if (LANGUAGES.some(([code]) => code === value)) return value;
+  } catch (_) {
+    // Storage may be unavailable in private contexts.
   }
+  return fallback;
+}
 
-  return { dispW, dispH };
+let sourceLanguage = loadStoredLanguage(STORAGE_SOURCE, "de");
+let targetLanguage = loadStoredLanguage(STORAGE_TARGET, "en");
+const languageControls = [];
+
+function buildLanguageSelect(isSource) {
+  const select = document.createElement("select");
+  select.className = "lang-select";
+  for (const [code, name] of LANGUAGES) {
+    const option = document.createElement("option");
+    option.value = code;
+    option.textContent = name;
+    select.appendChild(option);
+  }
+  select.addEventListener("change", () => {
+    if (isSource) sourceLanguage = select.value;
+    else targetLanguage = select.value;
+    applyLanguages();
+  });
+  return select;
+}
+
+function createLanguageControls(variant) {
+  const wrapper = document.createElement("div");
+  wrapper.className = `lang-controls${variant ? ` ${variant}` : ""}`;
+  const sourceSelect = buildLanguageSelect(true);
+  const targetSelect = buildLanguageSelect(false);
+
+  const swap = document.createElement("button");
+  swap.type = "button";
+  swap.className = "lang-swap";
+  swap.title = "Invert languages";
+  swap.setAttribute("aria-label", "Invert languages");
+  swap.textContent = "⇄";
+  let swapTurns = 0;
+  swap.addEventListener("click", () => {
+    [sourceLanguage, targetLanguage] = [targetLanguage, sourceLanguage];
+    swapTurns++;
+    swap.style.transform = `rotate(${swapTurns * 180}deg)`;
+    applyLanguages();
+  });
+
+  wrapper.append(sourceSelect, swap, targetSelect);
+  languageControls.push({ sourceSelect, targetSelect });
+  return wrapper;
+}
+
+function syncLanguageControls() {
+  for (const { sourceSelect, targetSelect } of languageControls) {
+    sourceSelect.value = sourceLanguage;
+    targetSelect.value = targetLanguage;
+  }
+}
+
+function applyLanguages() {
+  try {
+    localStorage.setItem(STORAGE_SOURCE, sourceLanguage);
+    localStorage.setItem(STORAGE_TARGET, targetLanguage);
+  } catch (_) {
+    // The active selection still works without persistence.
+  }
+  syncLanguageControls();
+  translationSession.setLanguages(sourceLanguage, targetLanguage);
+}
+
+document
+  .getElementById("intro-lang")
+  .appendChild(createLanguageControls("intro"));
+languageBar.appendChild(createLanguageControls("bar"));
+syncLanguageControls();
+
+function layoutDisplay() {
+  const sourceWidth = videoElement.videoWidth;
+  const sourceHeight = videoElement.videoHeight;
+  if (!sourceWidth || !sourceHeight) return;
+
+  const scale = Math.min(
+    window.innerWidth / sourceWidth,
+    window.innerHeight / sourceHeight,
+  );
+  const width = Math.round(sourceWidth * scale);
+  const height = Math.round(sourceHeight * scale);
+  const left = Math.round((window.innerWidth - width) / 2);
+  const top = Math.round((window.innerHeight - height) / 2);
+  const signature = `${left},${top},${width},${height}`;
+  if (signature === lastLayout) return;
+  lastLayout = signature;
+
+  for (const element of [videoElement, translateOverlay]) {
+    element.style.left = `${left}px`;
+    element.style.top = `${top}px`;
+    element.style.width = `${width}px`;
+    element.style.height = `${height}px`;
+  }
+  translationSession.setDisplaySize(width, height);
 }
 
 function stopSession() {
-  if (!isPlaying) return;
+  if (!isPlaying && !videoElement.srcObject) return;
   isPlaying = false;
+  translationSession.stop();
 
-  if (drawFrameHandle && videoEl.cancelVideoFrameCallback) {
-    videoEl.cancelVideoFrameCallback(drawFrameHandle);
+  if (videoElement.srcObject) {
+    for (const track of videoElement.srcObject.getTracks()) track.stop();
+    videoElement.srcObject = null;
   }
-  cancelAnimationFrame(ocrRafId);
-  drawFrameHandle = 0;
-  ocrRafId = 0;
-
-  if (videoEl.srcObject) {
-    videoEl.srcObject.getTracks().forEach((t) => t.stop());
-    videoEl.srcObject = null;
-  }
-  // Drop the stale frame so it doesn't flash on the next share.
-  canvasEl.width = 0;
-  canvasEl.height = 0;
-
-  resetTranslateFilter();
-  document.getElementById("intro").style.display = "";
+  lastLayout = "";
+  document.body.classList.remove("session-active");
+  languageBar.classList.remove("visible");
+  intro.style.display = "";
 }
 
-function startSession(stream) {
-  videoEl.srcObject = stream;
-  videoEl.play();
+async function startSession(stream) {
+  const track = stream.getVideoTracks()[0];
+  if (!track) throw new Error("Screen share did not provide a video track");
 
-  stream
-    .getVideoTracks()[0]
-    .addEventListener("ended", stopSession, { once: true });
-
-  // Boot (or reuse) the OCR + translation engine.
-  initTranslateFilter(translateOverlay);
-  showTranslateFilter();
-
-  const ctx = canvasEl.getContext("2d");
-  ctx.imageSmoothingEnabled = false;
-
-  // Latest displayed-canvas size, written by the draw loop and read by the
-  // OCR loop so the two run independently.
-  let dispW = 0;
-  let dispH = 0;
-
-  // --- Draw loop: paint the feed as fast as it is delivered ---
-  function drawFrame() {
-    if (!isPlaying) return;
-    if (videoEl.videoWidth === 0 || videoEl.readyState < 2) return;
-
-    if (
-      canvasEl.width !== videoEl.videoWidth ||
-      canvasEl.height !== videoEl.videoHeight
-    ) {
-      canvasEl.width = videoEl.videoWidth;
-      canvasEl.height = videoEl.videoHeight;
-    }
-
-    ctx.drawImage(videoEl, 0, 0);
-
-    // Letterbox-fit the feed into the window and align the overlay.
-    ({ dispW, dispH } = layoutDisplay(videoEl.videoWidth, videoEl.videoHeight));
+  if ("contentHint" in track) {
+    track.contentHint = "text";
+    if (track.contentHint !== "text") track.contentHint = "detail";
+  }
+  try {
+    await track.applyConstraints({ frameRate: { ideal: 30, max: 30 } });
+  } catch (error) {
+    console.warn("The browser could not apply the 30 fps capture cap:", error);
   }
 
-  if ("requestVideoFrameCallback" in HTMLVideoElement.prototype) {
-    function onVideoFrame() {
-      drawFrame();
-      if (isPlaying) drawFrameHandle = videoEl.requestVideoFrameCallback(onVideoFrame);
-    }
-    drawFrameHandle = videoEl.requestVideoFrameCallback(onVideoFrame);
-  } else {
-    function rafDraw() {
-      drawFrame();
-      if (isPlaying) drawFrameHandle = requestAnimationFrame(rafDraw);
-    }
-    drawFrameHandle = requestAnimationFrame(rafDraw);
-  }
+  videoElement.srcObject = stream;
+  track.addEventListener("ended", stopSession, { once: true });
+  await videoElement.play();
 
-  // --- OCR loop: scan + overlay on its own cadence, off the draw path ---
-  function ocrLoop() {
-    if (!isPlaying) return;
-    if (canvasEl.width > 0 && dispW > 0) {
-      renderTranslateFrame(canvasEl, dispW, dispH);
-    }
-    ocrRafId = requestAnimationFrame(ocrLoop);
-  }
-  ocrRafId = requestAnimationFrame(ocrLoop);
+  document.body.classList.add("session-active");
+  languageBar.classList.add("visible");
+  layoutDisplay();
+  translationSession.start(stream);
 }
 
-shareBtn.addEventListener("click", function () {
+shareButton.addEventListener("click", () => {
   if (isPlaying) return;
   isPlaying = true;
-  document.getElementById("intro").style.display = "none";
+  intro.style.display = "none";
+
+  // Both preparations begin in the click's activation task. The worker and
+  // model downloads can proceed while the user chooses a screen to share.
+  translationSession.prepare({ sourceLanguage, targetLanguage });
 
   navigator.mediaDevices
     .getDisplayMedia({
-      video: {
-        width: { ideal: screen.width * window.devicePixelRatio },
-        height: { ideal: screen.height * window.devicePixelRatio },
-        frameRate: { ideal: 60 },
-      },
+      video: { frameRate: { ideal: 30, max: 30 } },
       audio: false,
     })
     .then(startSession)
-    .catch((err) => {
-      console.error("getDisplayMedia failed:", err);
-      isPlaying = false;
-      document.getElementById("intro").style.display = "";
+    .catch((error) => {
+      console.error("getDisplayMedia failed:", error);
+      stopSession();
     });
+});
+
+videoElement.addEventListener("loadedmetadata", layoutDisplay);
+window.addEventListener("resize", layoutDisplay, { passive: true });
+window.addEventListener("pagehide", () => translationSession.dispose(), {
+  once: true,
 });

@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Traducto performance fixtures</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #172033; background: #f4f6fb; font: 18px/1.45 system-ui, sans-serif; }
+    nav { position: sticky; top: 0; z-index: 2; display: flex; gap: 8px; padding: 12px; background: #172033; }
+    button { padding: 8px 14px; border: 0; border-radius: 999px; cursor: pointer; }
+    main { max-width: 980px; margin: auto; padding: 36px; }
+    section { display: none; min-height: 120vh; }
+    section.active { display: block; }
+    h1 { font-size: 42px; letter-spacing: -0.04em; }
+    .card { margin: 20px 0; padding: 22px; border: 1px solid #ccd3df; border-radius: 14px; background: white; }
+    .dark { color: white; background: #172033; }
+    .rotated { width: 420px; margin: 90px auto; transform: rotate(-5deg); }
+    .dense { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    .dense p { min-height: 90px; margin: 0; padding: 9px; font-size: 12px; background: white; border: 1px solid #d8deea; }
+    .subtitle-stage { position: relative; height: 70vh; overflow: hidden; border-radius: 18px; background: linear-gradient(120deg, #172033, #6d28d9, #0891b2); }
+    .orb { position: absolute; width: 220px; height: 220px; border-radius: 50%; background: #fbbf24; animation: drift 5s linear infinite alternate; }
+    .subtitle { position: absolute; left: 10%; right: 10%; bottom: 10%; padding: 14px; color: white; background: rgba(0,0,0,.82); text-align: center; font-size: 28px; }
+    @keyframes drift { to { transform: translate(680px, 260px); } }
+  </style>
+</head>
+<body>
+  <nav aria-label="Fixture mode">
+    <button data-mode="static">Static and accents</button>
+    <button data-mode="scroll">Continuous scroll</button>
+    <button data-mode="dense">Dense text</button>
+    <button data-mode="motion">Moving subtitles</button>
+  </nav>
+  <main>
+    <section id="static" class="active">
+      <h1>Deterministic static OCR</h1>
+      <div class="card">
+        <h2>Deutsche Übersetzung</h2>
+        <p>Franz jagt im komplett verwahrlosten Taxi quer durch Bayern. Grüße, Größe, süß und außergewöhnlich.</p>
+      </div>
+      <div class="card dark">
+        <h2>Español, français, português</h2>
+        <p>El pingüino pidió información. Où est déjà l'hôtel? Coração, amanhã, educação e ações.</p>
+      </div>
+      <div class="card">
+        <h2>中文识别</h2>
+        <p>屏幕上的文字应该保持清晰，并且只在内容发生变化时重新识别。</p>
+      </div>
+      <div class="card rotated">
+        Rotated text verifies geometry, readable sizing, and overlay rotation.
+      </div>
+    </section>
+
+    <section id="scroll">
+      <h1>Scroll tracking</h1>
+      <div id="scroll-lines"></div>
+    </section>
+
+    <section id="dense">
+      <h1>Dense-region safety cap</h1>
+      <div class="dense" id="dense-grid"></div>
+    </section>
+
+    <section id="motion">
+      <h1>Continuously moving video</h1>
+      <div class="subtitle-stage">
+        <div class="orb"></div>
+        <div class="subtitle" id="subtitle">Der erste Untertitel bleibt kurz stehen.</div>
+      </div>
+    </section>
+  </main>
+  <script>
+    const scrollLines = document.getElementById("scroll-lines");
+    for (let index = 1; index <= 45; index++) {
+      const card = document.createElement("p");
+      card.className = "card";
+      card.textContent = `Absatz ${index}: Dieser Text bleibt beim Scrollen stabil und wird nach dem Anhalten aktualisiert.`;
+      scrollLines.appendChild(card);
+    }
+
+    const denseGrid = document.getElementById("dense-grid");
+    for (let index = 1; index <= 160; index++) {
+      const cell = document.createElement("p");
+      cell.textContent = `Region ${index}: kleiner wiederholbarer Text für die Erkennungsgrenze.`;
+      denseGrid.appendChild(cell);
+    }
+
+    const subtitles = [
+      "Der erste Untertitel bleibt kurz stehen.",
+      "Danach erscheint ein vollständig anderer Satz.",
+      "Bewegung im Hintergrund darf keine Warteschlange erzeugen.",
+      "Die Übersetzung soll trotzdem regelmäßig aktualisiert werden.",
+    ];
+    let subtitleIndex = 0;
+    setInterval(() => {
+      subtitleIndex = (subtitleIndex + 1) % subtitles.length;
+      document.getElementById("subtitle").textContent = subtitles[subtitleIndex];
+    }, 2400);
+
+    for (const button of document.querySelectorAll("button[data-mode]")) {
+      button.addEventListener("click", () => {
+        document.querySelector("section.active")?.classList.remove("active");
+        document.getElementById(button.dataset.mode).classList.add("active");
+        window.scrollTo(0, 0);
+      });
+    }
+  </script>
+</body>
+</html>

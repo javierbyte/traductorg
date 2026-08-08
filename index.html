@@ -4,53 +4,36 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <title>Translation Glass — Live German → English</title>
+  <title>Translation Glass — Live on-device translation</title>
   <meta name="description"
-    content="Share a screen and see German text translated to English, overlaid live on the feed." />
+    content="Share a screen and see its text translated on-device, overlaid live on the feed." />
   <meta name="theme-color" content="#000000" />
 
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+  <link rel="preconnect" href="https://www.modelscope.cn" crossorigin />
   <link rel="stylesheet" href="style.css" />
 </head>
 
 <body>
-  <video autoplay muted></video>
-  <canvas id="canvas" class="draw"></canvas>
+  <video autoplay muted playsinline></video>
   <div id="translate-overlay"></div>
 
+  <!-- Persistent language bar, shown only during a translation session. -->
+  <div id="lang-bar"></div>
+
   <div id="intro">
-    <code>German → English</code>
+    <div id="intro-lang"></div>
     <p>
-      Share a screen showing German text<br />
+      Share a screen with text in the source language<br />
       to see it translated live.
     </p>
-    <button id="share-btn">Share Current Screen</button>
+    <button id="share-btn">Share video to translate</button>
     <p>
       Chrome only. Translation runs on-device.
     </p>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.26.0/dist/ort.min.js"></script>
-  <script>
-    ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.26.0/dist/";
-    // Run inference in a Web Worker so OCR never blocks video painting.
-    ort.env.wasm.proxy = true;
-    // Multi-threaded WASM needs SharedArrayBuffer, which only exists when the
-    // page is cross-origin isolated (see server.js / vercel.json headers).
-    ort.env.wasm.numThreads = self.crossOriginIsolated
-      ? navigator.hardwareConcurrency || 4
-      : 1;
-    console.log(
-      "crossOriginIsolated:", self.crossOriginIsolated,
-      "ocr threads:", ort.env.wasm.numThreads,
-    );
-  </script>
-  <script type="module">
-    import * as Paddle from "https://cdn.jsdelivr.net/npm/esearch-ocr@8.5.0/dist/esearch-ocr.js";
-    window.Paddle = Paddle;
-    window.dispatchEvent(new Event("paddle-ready"));
-  </script>
-  <script src="ocr.js"></script>
-  <script src="script.js"></script>
+  <script type="module" src="script.js"></script>
 </body>
 
 </html>
