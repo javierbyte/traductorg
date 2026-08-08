@@ -3,6 +3,12 @@
 Live, on-device translation over a screen-shared video feed. The source and
 target languages are selectable; German → English is the default.
 
+## Features
+
+1. It's free!
+2. It's local, no screen capture or text is ever sent to any server.
+3. It's open source.
+
 ## Runtime architecture
 
 1. **Native screen composition.** The captured stream is displayed directly in
