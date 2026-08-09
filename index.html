@@ -8,9 +8,9 @@
   <meta name="description"
     content="Share a screen and see its text translated on-device, overlaid live on the feed." />
   <meta name="theme-color" content="#000000" />
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; worker-src 'self' blob:; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'" />
 
-  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
-  <link rel="preconnect" href="https://www.modelscope.cn" crossorigin />
   <link rel="stylesheet" href="style.css" />
 </head>
 
@@ -27,10 +27,21 @@
       Share a screen with text in the source language<br />
       to see it translated live.
     </p>
-    <button id="share-btn">Share video to translate</button>
-    <p>
-      Chrome only. Translation runs on-device.
-    </p>
+    <button id="share-btn" type="button">Share video to translate</button>
+    <p class="runtime-note">Chrome desktop only. Translation runs on-device.</p>
+    <details id="privacy-details">
+      <summary>Free, local, and open-source details</summary>
+      <div class="privacy-copy">
+        <p><strong>Free:</strong> no account, ads, subscription, telemetry, or usage fees.</p>
+        <p><strong>Local:</strong> screen pixels and recognized or translated text stay on this device.</p>
+        <p><strong>Open source:</strong> the application source is licensed under GPL-3.0.</p>
+        <p>
+          The app downloads ordinary static files and OCR models from its host. Chrome may separately
+          download language packs. Hosts can observe normal asset requests and IP metadata, but the app
+          never uploads captured content or text. Language choices are stored only in this browser.
+        </p>
+      </div>
+    </details>
   </div>
 
   <script type="module" src="script.js"></script>

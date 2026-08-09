@@ -1,5 +1,5 @@
-import * as ort from "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.26.0/dist/ort.min.mjs";
-import * as Paddle from "https://cdn.jsdelivr.net/npm/esearch-ocr@8.5.0/dist/esearch-ocr.js";
+import * as Paddle from "esearch-ocr";
+import * as ort from "onnxruntime-web/wasm";
 
 import {
   AdaptiveOcrPolicy,
@@ -15,33 +15,29 @@ import {
   selectReadableBoxes,
   stableItemKey,
 } from "./performance-core.js";
+import { fetchVerifiedAsset, resolveLocalAssetUrl } from "./local-assets.js";
 
 // Worker protocol: init/reset/dispose carry sessionId + frameId 0; sample and
 // ocr carry monotonically increasing frameId values and transferable bitmaps.
 // Responses are status, ready, motion, ocr-result, ocr-busy, or structured
 // error objects with the same session/frame identity as their request.
 
-const CDN_ROOT = "https://cdn.jsdelivr.net/npm/";
-const PADDLE_ROOT = `${CDN_ROOT}paddleocr-browser@1.0.3/dist/`;
-const ORT_ROOT = `${CDN_ROOT}onnxruntime-web@1.26.0/dist/`;
-const RAPID_OCR_ROOT =
-  "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/";
 const SCROLL_TOP_EXCLUSION_PX = 80;
 
 const MODEL_CONFIG = Object.freeze({
   latin: {
-    rec: `${RAPID_OCR_ROOT}onnx/PP-OCRv5/rec/latin_PP-OCRv5_rec_mobile.onnx`,
-    dictionary: `${RAPID_OCR_ROOT}paddle/PP-OCRv5/rec/latin_PP-OCRv5_rec_mobile/ppocrv5_latin_dict.txt`,
+    recognition: "latinRecognition",
+    dictionary: "latinDictionary",
     optimizeSpaces: false,
   },
   zh: {
-    rec: `${PADDLE_ROOT}ppocr_rec.onnx`,
-    dictionary: `${PADDLE_ROOT}ppocr_keys_v1.txt`,
+    recognition: "chineseRecognition",
+    dictionary: "chineseDictionary",
     optimizeSpaces: false,
   },
 });
 
-ort.env.wasm.wasmPaths = ORT_ROOT;
+ort.env.wasm.wasmPaths = { wasm: resolveLocalAssetUrl("ortWasm").href };
 ort.env.wasm.proxy = false;
 ort.env.wasm.numThreads = Math.min(
   4,
@@ -77,29 +73,26 @@ function describeError(error) {
   };
 }
 
-async function fetchChecked(url) {
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`Failed to load ${url} (${response.status})`);
-  return response;
-}
-
 async function loadRecognitionAssets(selectedModel) {
   const config = MODEL_CONFIG[selectedModel];
   if (!config) throw new Error(`Unknown OCR model: ${selectedModel}`);
 
   const [input, dictionary] = await Promise.all([
-    (await fetchChecked(config.rec)).arrayBuffer(),
-    (await fetchChecked(config.dictionary)).text(),
+    fetchVerifiedAsset(config.recognition),
+    fetchVerifiedAsset(config.dictionary),
   ]);
   return {
-    input: new Uint8Array(input),
+    input,
     dictionary,
     optimizeSpaces: config.optimizeSpaces,
   };
 }
 
 async function initializeEngine(selectedModel) {
-  const recognition = await loadRecognitionAssets(selectedModel);
+  const [detector, recognition] = await Promise.all([
+    fetchVerifiedAsset("detector"),
+    loadRecognitionAssets(selectedModel),
+  ]);
 
   send("status", {
     sessionId: activeSessionId,
@@ -107,7 +100,7 @@ async function initializeEngine(selectedModel) {
     message: "Initializing OCR...",
   });
   const instance = await Paddle.init({
-    det: { input: `${PADDLE_ROOT}ppocr_det.onnx` },
+    det: { input: detector },
     rec: {
       input: recognition.input,
       decodeDic: recognition.dictionary,

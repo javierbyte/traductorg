@@ -2,10 +2,24 @@
   "name": "translation-glass",
   "version": "1.0.0",
   "private": true,
+  "license": "GPL-3.0-only",
   "type": "module",
   "scripts": {
-    "dev": "node server.js",
-    "test": "node --test",
-    "check": "node --check script.js && node --check ocr.js && node --check ocr-worker.js && node --test"
+    "dev": "node scripts/sync-ocr-assets.mjs && vite",
+    "build": "node scripts/sync-ocr-assets.mjs && vite build && node scripts/verify-build.mjs",
+    "preview": "vite preview",
+    "test": "node --test test/*.test.js",
+    "test:privacy": "npm run build && playwright test",
+    "check:source": "node scripts/audit-production-source.mjs",
+    "check": "node --check script.js && node --check ocr.js && node --check ocr-worker.js && node --test test/*.test.js && npm run check:source && npm run test:privacy"
+  },
+  "dependencies": {
+    "esearch-ocr": "8.5.0",
+    "onnxruntime-web": "1.26.0",
+    "paddleocr-browser": "1.0.3"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "vite": "8.2.1"
   }
 }

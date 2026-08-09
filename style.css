@@ -39,7 +39,7 @@ body.session-active video {
   transform: translate(-50%, -50%);
   z-index: 2000;
   text-align: center;
-  max-width: 400px;
+  max-width: 480px;
   width: calc(100vw - 48px);
 }
 
@@ -175,10 +175,51 @@ body.session-active video {
   margin: 0 0 28px;
 }
 
-#intro p:last-child {
+#intro .runtime-note {
   font-size: 0.8125rem;
   color: rgba(255, 255, 255, 0.4);
   margin: 24px 0 0;
+}
+
+#privacy-details {
+  margin: 18px auto 0;
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  text-align: left;
+  max-width: 440px;
+}
+
+#privacy-details summary {
+  width: max-content;
+  max-width: 100%;
+  margin: 0 auto;
+  color: rgba(255, 255, 255, 0.62);
+  cursor: pointer;
+  text-align: center;
+}
+
+.privacy-copy {
+  margin-top: 12px;
+  padding: 14px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+#intro .privacy-copy p {
+  margin: 0 0 8px;
+  color: inherit;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+#intro .privacy-copy p:last-child {
+  margin-bottom: 0;
+}
+
+.privacy-copy strong {
+  color: rgba(255, 255, 255, 0.86);
 }
 
 #share-btn {
