@@ -6,6 +6,7 @@ import {
   LruCache,
   MOTION_DEFAULTS,
   buildAdaptiveParagraphs,
+  displayPixelsToSampleRows,
   estimateVerticalShift,
   fingerprintImageData,
   isActiveGeneration,
@@ -25,6 +26,7 @@ const PADDLE_ROOT = `${CDN_ROOT}paddleocr-browser@1.0.3/dist/`;
 const ORT_ROOT = `${CDN_ROOT}onnxruntime-web@1.26.0/dist/`;
 const RAPID_OCR_ROOT =
   "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/";
+const SCROLL_TOP_EXCLUSION_PX = 80;
 
 const MODEL_CONFIG = Object.freeze({
   latin: {
@@ -228,13 +230,20 @@ function handleSample(message) {
   }
 
   const image = bitmapToImageData(message.bitmap, "sample");
-  const profile = rowLumaProfile(image);
+  const excludedRows = displayPixelsToSampleRows(
+    SCROLL_TOP_EXCLUSION_PX,
+    image.height,
+    message.displayHeight,
+  );
+  const profile = rowLumaProfile(image, 0.7, excludedRows);
+  const profileDisplayHeight =
+    message.displayHeight * (profile.length / image.height);
   const frameDelta = meanPixelDiff(previousSample, image.data);
   const ocrDelta = meanPixelDiff(lastOcrSample, image.data);
   const shift = estimateVerticalShift(
     previousProfile,
     profile,
-    message.displayHeight,
+    profileDisplayHeight,
   );
 
   previousSample = new Uint8ClampedArray(image.data);

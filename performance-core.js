@@ -318,25 +318,42 @@ export function meanPixelDiff(previous, current) {
   return pixels ? difference / (pixels * 3) : 0;
 }
 
-export function rowLumaProfile(imageData, cropFraction = 0.7) {
+export function displayPixelsToSampleRows(
+  displayPixels,
+  sampleHeight,
+  displayHeight,
+) {
+  if (!(displayPixels > 0) || !(sampleHeight > 1) || !(displayHeight > 0)) {
+    return 0;
+  }
+  return clamp(
+    Math.round((displayPixels / displayHeight) * sampleHeight),
+    0,
+    sampleHeight - 1,
+  );
+}
+
+export function rowLumaProfile(imageData, cropFraction = 0.7, startRow = 0) {
   const { data, width, height } = imageData;
   const cropWidth = Math.max(1, Math.round(width * cropFraction));
   const startX = Math.round((width - cropWidth) / 2);
-  const profile = new Float32Array(height);
+  const firstRow = clamp(Math.round(startRow), 0, Math.max(0, height - 1));
+  const profile = new Float32Array(height - firstRow);
   let total = 0;
 
-  for (let y = 0; y < height; y++) {
+  for (let y = firstRow; y < height; y++) {
     let row = 0;
     for (let x = startX; x < startX + cropWidth; x++) {
       const index = (y * width + x) * 4;
       row += data[index] * 0.299 + data[index + 1] * 0.587 + data[index + 2] * 0.114;
     }
-    profile[y] = row / cropWidth;
-    total += profile[y];
+    const profileRow = y - firstRow;
+    profile[profileRow] = row / cropWidth;
+    total += profile[profileRow];
   }
 
-  const mean = total / height;
-  for (let y = 0; y < height; y++) profile[y] -= mean;
+  const mean = total / profile.length;
+  for (let y = 0; y < profile.length; y++) profile[y] -= mean;
   return profile;
 }
 
@@ -422,6 +439,22 @@ export function quadToDisplayRect(box, imageWidth, imageHeight, displayWidth, di
     angle: Math.atan2(topRight[1] - topLeft[1], topRight[0] - topLeft[0]),
     boxHeight: Math.hypot(bottomLeft[0] - topLeft[0], bottomLeft[1] - topLeft[1]),
   };
+}
+
+export function computeOverlayFontSize(boxHeight, lineCount = 1) {
+  const sourceLineHeight = Math.max(1, boxHeight / Math.max(1, lineCount || 1));
+  return clamp(sourceLineHeight * 0.9, 9, 96);
+}
+
+export function inferOverlayTextAlign(rect, lineCount, displayWidth) {
+  const lines = Math.max(1, lineCount || 1);
+  const centerTolerance = Math.max(24, displayWidth * 0.05);
+  const boxCenter = rect.left + rect.width / 2;
+  const obviouslyCentered =
+    lines === 1 &&
+    rect.width <= displayWidth * 0.8 &&
+    Math.abs(boxCenter - displayWidth / 2) <= centerTolerance;
+  return obviouslyCentered ? "center" : "left";
 }
 
 export function stableItemKey(item) {

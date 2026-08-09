@@ -230,7 +230,7 @@ body.session-active video {
   position: absolute;
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   font-family:
     system-ui,
     -apple-system,
@@ -242,9 +242,14 @@ body.session-active video {
   overflow: hidden;
   overflow-wrap: anywhere;
   white-space: normal;
-  text-align: center;
+  text-align: left;
   transform-origin: top left;
   contain: layout paint style;
+}
+
+.translate-box.is-centered {
+  justify-content: center;
+  text-align: center;
 }
 
 .translate-status {

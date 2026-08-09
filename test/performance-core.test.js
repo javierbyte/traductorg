@@ -6,12 +6,16 @@ import {
   LruCache,
   SupersedingQueue,
   buildAdaptiveParagraphs,
+  computeOverlayFontSize,
   computeOcrDimensions,
+  displayPixelsToSampleRows,
   estimateVerticalShift,
   fingerprintImageData,
   isActiveGeneration,
   meanPixelDiff,
   quadToDisplayRect,
+  inferOverlayTextAlign,
+  rowLumaProfile,
   selectReadableBoxes,
 } from "../performance-core.js";
 
@@ -143,6 +147,75 @@ test("vertical shift reports content movement in display pixels", () => {
   });
   assert.equal(result.moved, true);
   assert.ok(result.dy < -15 && result.dy > -25);
+});
+
+test("scroll profiles ignore a changing fixed-height navigation region", () => {
+  const image = (rows) => {
+    const data = new Uint8ClampedArray(rows.length * 4);
+    rows.forEach((value, index) => {
+      data.set([value, value, value, 255], index * 4);
+    });
+    return { data, width: 1, height: rows.length };
+  };
+  const previous = image([0, 90, 0, 20, 80, 180, 80, 20, 0, 0]);
+  const current = image([0, 245, 20, 80, 180, 80, 20, 0, 0, 0]);
+  const unfiltered = estimateVerticalShift(
+    rowLumaProfile(previous, 1),
+    rowLumaProfile(current, 1),
+    400,
+    { maxShiftRows: 3, confidence: 0.1 },
+  );
+  const excludedRows = displayPixelsToSampleRows(80, 10, 400);
+  const previousProfile = rowLumaProfile(previous, 1, excludedRows);
+  const currentProfile = rowLumaProfile(current, 1, excludedRows);
+  const trackedHeight = 400 * (currentProfile.length / current.height);
+  const result = estimateVerticalShift(
+    previousProfile,
+    currentProfile,
+    trackedHeight,
+    { maxShiftRows: 3, confidence: 0.1 },
+  );
+
+  assert.equal(unfiltered.moved, false);
+  assert.equal(excludedRows, 2);
+  assert.equal(result.moved, true);
+  assert.ok(result.dy < -35 && result.dy > -45);
+});
+
+test("top exclusion leaves one sample row for very short displays", () => {
+  assert.equal(displayPixelsToSampleRows(80, 200, 40), 199);
+  const profile = rowLumaProfile(
+    { data: new Uint8ClampedArray(200 * 4), width: 1, height: 200 },
+    1,
+    199,
+  );
+  assert.equal(profile.length, 1);
+});
+
+test("overlay typography matches source scale within safe bounds", () => {
+  assert.equal(computeOverlayFontSize(20, 1), 18);
+  assert.equal(computeOverlayFontSize(40, 2), 18);
+  assert.equal(computeOverlayFontSize(4, 1), 9);
+  assert.equal(computeOverlayFontSize(200, 1), 96);
+});
+
+test("overlay alignment centers only obvious single-line text", () => {
+  assert.equal(
+    inferOverlayTextAlign({ left: 350, width: 300 }, 1, 1000),
+    "center",
+  );
+  assert.equal(
+    inferOverlayTextAlign({ left: 60, width: 300 }, 1, 1000),
+    "left",
+  );
+  assert.equal(
+    inferOverlayTextAlign({ left: 350, width: 300 }, 2, 1000),
+    "left",
+  );
+  assert.equal(
+    inferOverlayTextAlign({ left: 50, width: 900 }, 1, 1000),
+    "left",
+  );
 });
 
 test("quad mapping preserves position, size, and rotation", () => {

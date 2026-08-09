@@ -2,7 +2,9 @@ import {
   LruCache,
   SupersedingQueue,
   clamp,
+  computeOverlayFontSize,
   computeOcrDimensions,
+  inferOverlayTextAlign,
   isActiveGeneration,
   normalizeText,
   quadToDisplayRect,
@@ -813,8 +815,12 @@ export class TranslationSession {
       const background = rgb(item.style, "bg", [245, 245, 245]);
       const preferredText = rgb(item.style, "text", [0, 0, 0]);
       const textColor = contrastText(background, preferredText);
-      const lineHeight = Math.max(1, rect.boxHeight / Math.max(1, item.lineCount || 1));
-      const fontSize = clamp(lineHeight * 0.72, 9, 32);
+      const fontSize = computeOverlayFontSize(rect.boxHeight, item.lineCount);
+      const textAlign = inferOverlayTextAlign(
+        rect,
+        item.lineCount,
+        this.displayWidth,
+      );
       const padding = 4;
       const signature = [
         translated,
@@ -824,13 +830,16 @@ export class TranslationSession {
         rect.height,
         rect.angle,
         fontSize,
+        textAlign,
         ...background,
         ...textColor,
       ].join("|");
 
       if (node.translationSignature !== signature) {
         node.translationSignature = signature;
-        node.className = "translate-box";
+        node.className = `translate-box${
+          textAlign === "center" ? " is-centered" : ""
+        }`;
         node.textContent = translated;
         node.style.left = `${rect.left - padding}px`;
         node.style.top = `${rect.top - padding}px`;
