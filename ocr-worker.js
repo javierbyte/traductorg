@@ -6,12 +6,13 @@ import {
   LruCache,
   MOTION_DEFAULTS,
   buildAdaptiveParagraphs,
+  buildScrollFeatureMap,
   displayPixelsToSampleRows,
   estimateVerticalShift,
   fingerprintImageData,
   isActiveGeneration,
+  isFrameActive,
   meanPixelDiff,
-  rowLumaProfile,
   selectReadableBoxes,
   stableItemKey,
 } from "./performance-core.js";
@@ -54,7 +55,7 @@ let sampleContext = null;
 let ocrCanvas = null;
 let ocrContext = null;
 let previousSample = null;
-let previousProfile = null;
+let previousFeatures = null;
 let latestSample = null;
 let lastOcrSample = null;
 
@@ -146,7 +147,7 @@ function bitmapToImageData(bitmap, kind) {
 async function handleInit(message) {
   activeSessionId = message.sessionId;
   previousSample = null;
-  previousProfile = null;
+  previousFeatures = null;
   latestSample = null;
   lastOcrSample = null;
 
@@ -211,7 +212,7 @@ async function handleInit(message) {
 function handleReset(message) {
   activeSessionId = message.sessionId;
   previousSample = null;
-  previousProfile = null;
+  previousFeatures = null;
   latestSample = null;
   lastOcrSample = null;
 }
@@ -228,38 +229,35 @@ function handleSample(message) {
     image.height,
     message.displayHeight,
   );
-  const profile = rowLumaProfile(image, 0.7, excludedRows);
-  const profileDisplayHeight =
-    message.displayHeight * (profile.length / image.height);
+  const features = buildScrollFeatureMap(image, excludedRows);
   const frameDelta = meanPixelDiff(previousSample, image.data);
   const ocrDelta = meanPixelDiff(lastOcrSample, image.data);
   const shift = estimateVerticalShift(
-    previousProfile,
-    profile,
-    profileDisplayHeight,
+    previousFeatures,
+    features,
+    message.displayHeight,
   );
 
   previousSample = new Uint8ClampedArray(image.data);
-  previousProfile = profile;
+  previousFeatures = features;
   latestSample = {
     frameId: message.frameId,
     data: new Uint8ClampedArray(image.data),
   };
 
   const changed = !lastOcrSample || ocrDelta > MOTION_DEFAULTS.diffThreshold;
+  const active = isFrameActive(frameDelta);
   send("motion", {
     sessionId: message.sessionId,
     frameId: message.frameId,
     changed,
+    active,
     frameDelta: Number.isFinite(frameDelta) ? frameDelta : 0,
     ocrDelta: Number.isFinite(ocrDelta) ? ocrDelta : Infinity,
-    sceneChange:
-      Boolean(lastOcrSample) &&
-      !shift.moved &&
-      ocrDelta > MOTION_DEFAULTS.sceneThreshold,
     moved: shift.moved,
     dy: shift.dy,
     confidence: shift.confidence,
+    uniqueness: shift.uniqueness,
   });
 }
 

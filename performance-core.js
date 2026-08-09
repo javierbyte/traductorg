@@ -16,10 +16,15 @@ export const OCR_POLICY_DEFAULTS = Object.freeze({
 
 export const MOTION_DEFAULTS = Object.freeze({
   diffThreshold: 4,
-  sceneThreshold: 12,
+  activityThreshold: 1.25,
   maxShiftRows: 64,
   minDisplayDy: 0.3,
-  confidence: 0.35,
+  minOverlap: 0.65,
+  minTexture: 1.5,
+  retainedColumns: 0.7,
+  confidence: 0.18,
+  uniqueness: 0.035,
+  maxResidual: 0.9,
 });
 
 export function clamp(value, min, max) {
@@ -186,6 +191,49 @@ export class SupersedingQueue {
   }
 }
 
+export class OverlayReplacementPolicy {
+  constructor(emptyConfirmations = 2) {
+    this.emptyConfirmations = Math.max(1, emptyConfirmations);
+    this.emptyStreak = 0;
+    this.pending = null;
+  }
+
+  reset() {
+    this.emptyStreak = 0;
+    this.pending = null;
+  }
+
+  submit(batch) {
+    this.pending = batch;
+    if (batch.items.length) {
+      this.emptyStreak = 0;
+      return "hold";
+    }
+    this.emptyStreak++;
+    this.pending = null;
+    return this.emptyStreak >= this.emptyConfirmations ? "clear" : "hold";
+  }
+
+  isCurrent(batch) {
+    return Boolean(
+      batch &&
+        this.pending === batch &&
+        batch.generation === this.pending.generation &&
+        batch.pair === this.pending.pair,
+    );
+  }
+
+  markRenderable(batch, count) {
+    if (!this.isCurrent(batch) || batch.promoted || count <= 0) return false;
+    batch.promoted = true;
+    return true;
+  }
+
+  finish(batch) {
+    if (this.pending === batch) this.pending = null;
+  }
+}
+
 export function isActiveGeneration(messageSessionId, activeSessionId) {
   return messageSessionId === activeSessionId;
 }
@@ -318,6 +366,13 @@ export function meanPixelDiff(previous, current) {
   return pixels ? difference / (pixels * 3) : 0;
 }
 
+export function isFrameActive(
+  frameDelta,
+  threshold = MOTION_DEFAULTS.activityThreshold,
+) {
+  return Number.isFinite(frameDelta) && frameDelta > threshold;
+}
+
 export function displayPixelsToSampleRows(
   displayPixels,
   sampleHeight,
@@ -333,41 +388,83 @@ export function displayPixelsToSampleRows(
   );
 }
 
-export function rowLumaProfile(imageData, cropFraction = 0.7, startRow = 0) {
-  const { data, width, height } = imageData;
-  const cropWidth = Math.max(1, Math.round(width * cropFraction));
-  const startX = Math.round((width - cropWidth) / 2);
+export function buildScrollFeatureMap(imageData, startRow = 0) {
+  const { data, width, height: sourceHeight } = imageData;
+  const height = Math.max(1, sourceHeight);
   const firstRow = clamp(Math.round(startRow), 0, Math.max(0, height - 1));
-  const profile = new Float32Array(height - firstRow);
-  let total = 0;
+  const featureHeight = sourceHeight - firstRow;
+  const luma = new Float32Array(width * sourceHeight);
+  const features = new Float32Array(width * featureHeight);
 
-  for (let y = firstRow; y < height; y++) {
-    let row = 0;
-    for (let x = startX; x < startX + cropWidth; x++) {
+  for (let y = 0; y < sourceHeight; y++) {
+    for (let x = 0; x < width; x++) {
       const index = (y * width + x) * 4;
-      row += data[index] * 0.299 + data[index + 1] * 0.587 + data[index + 2] * 0.114;
+      luma[y * width + x] =
+        data[index] * 0.299 +
+        data[index + 1] * 0.587 +
+        data[index + 2] * 0.114;
     }
-    const profileRow = y - firstRow;
-    profile[profileRow] = row / cropWidth;
-    total += profile[profileRow];
   }
 
-  const mean = total / profile.length;
-  for (let y = 0; y < profile.length; y++) profile[y] -= mean;
-  return profile;
+  for (let y = firstRow; y < sourceHeight; y++) {
+    for (let x = 0; x < width; x++) {
+      const index = y * width + x;
+      const vertical = y ? Math.abs(luma[index] - luma[index - width]) : 0;
+      const horizontal = x ? Math.abs(luma[index] - luma[index - 1]) : 0;
+      features[(y - firstRow) * width + x] = vertical + horizontal * 0.35;
+    }
+  }
+
+  return {
+    data: features,
+    width,
+    height: featureHeight,
+    sourceHeight,
+  };
 }
 
-export function profileResidual(previous, current, shift) {
-  const height = Math.min(previous.length, current.length);
+function featureResidual(previous, current, shift, config) {
+  if (
+    !previous ||
+    !current ||
+    previous.width !== current.width ||
+    previous.height !== current.height
+  ) {
+    return Infinity;
+  }
+
+  const { width, height } = current;
   const start = Math.max(0, -shift);
   const end = Math.min(height, height - shift);
-  let total = 0;
-  let count = 0;
-  for (let i = start; i < end; i++) {
-    total += Math.abs(previous[i] - current[i + shift]);
-    count++;
+  if (end - start < height * config.minOverlap) return Infinity;
+
+  const columns = [];
+  for (let x = 0; x < width; x++) {
+    let error = 0;
+    let texture = 0;
+    let count = 0;
+    for (let y = start; y < end; y++) {
+      const previousValue = previous.data[y * width + x];
+      const currentValue = current.data[(y + shift) * width + x];
+      error += Math.abs(previousValue - currentValue);
+      texture += (previousValue + currentValue) * 0.5;
+      count++;
+    }
+    const averageTexture = count ? texture / count : 0;
+    if (averageTexture >= config.minTexture) {
+      columns.push((error / count) / (averageTexture + 1));
+    }
   }
-  return count ? total / count : Infinity;
+
+  if (columns.length < Math.min(4, width)) return Infinity;
+  columns.sort((a, b) => a - b);
+  const retained = Math.max(
+    Math.min(4, columns.length),
+    Math.ceil(columns.length * config.retainedColumns),
+  );
+  let total = 0;
+  for (let index = 0; index < retained; index++) total += columns[index];
+  return total / retained;
 }
 
 export function estimateVerticalShift(
@@ -377,18 +474,32 @@ export function estimateVerticalShift(
   options = {},
 ) {
   const config = { ...MOTION_DEFAULTS, ...options };
-  if (!previous || !current) return { moved: false, dy: 0, confidence: 0 };
+  const noMovement = (confidence = 0, uniqueness = 0, residual = Infinity) => ({
+    moved: false,
+    dy: 0,
+    confidence,
+    uniqueness,
+    residual,
+  });
+  if (!previous || !current) return noMovement();
 
   const maxShift = Math.min(
     config.maxShiftRows,
-    Math.max(1, Math.floor(current.length * 0.32)),
+    Math.max(1, Math.floor(current.height * (1 - config.minOverlap))),
   );
-  const zeroResidual = profileResidual(previous, current, 0);
+  const scores = new Map();
+  const residualAt = (shift) => {
+    if (!scores.has(shift)) {
+      scores.set(shift, featureResidual(previous, current, shift, config));
+    }
+    return scores.get(shift);
+  };
+  const zeroResidual = residualAt(0);
   let bestShift = 0;
   let bestResidual = Infinity;
 
   for (let shift = -maxShift; shift <= maxShift; shift++) {
-    const residual = profileResidual(previous, current, shift);
+    const residual = residualAt(shift);
     if (residual < bestResidual) {
       bestResidual = residual;
       bestShift = shift;
@@ -396,15 +507,32 @@ export function estimateVerticalShift(
   }
 
   const confidence =
-    zeroResidual > 0 ? (zeroResidual - bestResidual) / zeroResidual : 0;
-  if (bestShift === 0 || confidence < config.confidence) {
-    return { moved: false, dy: 0, confidence };
+    Number.isFinite(zeroResidual) && zeroResidual > 0
+      ? (zeroResidual - bestResidual) / zeroResidual
+      : 0;
+  let runnerUp = Infinity;
+  for (const [shift, residual] of scores) {
+    if (Math.abs(shift - bestShift) <= 2) continue;
+    runnerUp = Math.min(runnerUp, residual);
+  }
+  const uniqueness =
+    Number.isFinite(runnerUp) && runnerUp > 0
+      ? (runnerUp - bestResidual) / runnerUp
+      : 0;
+  if (
+    bestShift === 0 ||
+    !Number.isFinite(bestResidual) ||
+    bestResidual > config.maxResidual ||
+    confidence < config.confidence ||
+    uniqueness < config.uniqueness
+  ) {
+    return noMovement(confidence, uniqueness, bestResidual);
   }
 
   let refinedShift = bestShift;
   if (bestShift > -maxShift && bestShift < maxShift) {
-    const before = profileResidual(previous, current, bestShift - 1);
-    const after = profileResidual(previous, current, bestShift + 1);
+    const before = residualAt(bestShift - 1);
+    const after = residualAt(bestShift + 1);
     const denominator = before - 2 * bestResidual + after;
     if (denominator > 0) {
       const delta = (0.5 * (before - after)) / denominator;
@@ -414,11 +542,11 @@ export function estimateVerticalShift(
 
   // A negative shift means a feature that used to be lower is now higher,
   // which is a negative on-screen displacement for the content.
-  const dy = refinedShift * (displayHeight / current.length);
+  const dy = refinedShift * (displayHeight / current.sourceHeight);
   if (Math.abs(dy) < config.minDisplayDy) {
-    return { moved: false, dy: 0, confidence };
+    return noMovement(confidence, uniqueness, bestResidual);
   }
-  return { moved: true, dy, confidence };
+  return { moved: true, dy, confidence, uniqueness, residual: bestResidual };
 }
 
 export function quadToDisplayRect(box, imageWidth, imageHeight, displayWidth, displayHeight) {

@@ -307,9 +307,13 @@ body.session-active video {
   font-size: 13px;
   font-weight: 500;
   letter-spacing: -0.01em;
+  line-height: 1.35;
+  max-width: min(680px, calc(100vw - 48px));
   padding: 8px 16px;
   border-radius: 999px;
   pointer-events: none;
+  text-align: center;
+  overflow-wrap: anywhere;
 }
 
 .translate-status:empty {

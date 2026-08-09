@@ -1,5 +1,6 @@
 import {
   LruCache,
+  OverlayReplacementPolicy,
   SupersedingQueue,
   clamp,
   computeOverlayFontSize,
@@ -67,6 +68,13 @@ function percentile(values, amount) {
   return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * amount))];
 }
 
+function workerErrorMessage(message) {
+  const detail = String(message?.error?.message || "").replace(/\s+/g, " ").trim();
+  const prefix = `OCR ${message?.stage || "worker"} failed`;
+  if (!detail) return prefix;
+  return `${prefix}: ${detail.slice(0, 240)}`;
+}
+
 // The app's single runtime contract: prepare(options), start(stream),
 // setLanguages(source, target), stop(), and dispose().
 export class TranslationSession {
@@ -105,6 +113,7 @@ export class TranslationSession {
     this.translationCache = new LruCache(CACHE_MAX);
     this.translationInFlight = new Map();
     this.translationQueue = new SupersedingQueue();
+    this.replacementPolicy = new OverlayReplacementPolicy(2);
     this.translationPumpRunning = false;
 
     this.displayWidth = 0;
@@ -114,7 +123,6 @@ export class TranslationSession {
     this.frameId = 0;
     this.latestMotionFrameId = 0;
     this.ocrFrameId = 0;
-    this.minimumOcrFrameId = 0;
     this.lastSampleAt = 0;
     this.samplePending = false;
     this.ocrInFlight = false;
@@ -122,8 +130,8 @@ export class TranslationSession {
     this.hasOcrResult = false;
     this.nextOcrAt = 0;
     this.changedSince = 0;
+    this.lastActivityAt = 0;
     this.lastScrollAt = 0;
-    this.sceneCleared = false;
 
     this.scrollAccum = 0;
     this.resultScrollBase = 0;
@@ -183,7 +191,6 @@ export class TranslationSession {
       this.ocrInFlight = false;
       this.latestMotionFrameId = 0;
       this.ocrFrameId = 0;
-      this.minimumOcrFrameId = 0;
       this.initialOcrSent = false;
       this.nextOcrAt = 0;
       this.translationQueue.clear();
@@ -215,7 +222,6 @@ export class TranslationSession {
     this.frameId = 0;
     this.latestMotionFrameId = 0;
     this.ocrFrameId = 0;
-    this.minimumOcrFrameId = 0;
     this.lastSampleAt = 0;
     this.samplePending = false;
     this.ocrInFlight = false;
@@ -223,8 +229,8 @@ export class TranslationSession {
     this.hasOcrResult = false;
     this.nextOcrAt = 0;
     this.changedSince = 0;
+    this.lastActivityAt = 0;
     this.lastScrollAt = 0;
-    this.sceneCleared = false;
     this.#resetScroll();
 
     if (!this.sameLanguage && this.translatorState !== "unavailable") {
@@ -241,7 +247,6 @@ export class TranslationSession {
     this.samplePending = false;
     this.ocrInFlight = false;
     this.ocrFrameId = 0;
-    this.minimumOcrFrameId = 0;
     this.translationQueue.clear();
     this.#clearResults(true);
     if (this.worker) {
@@ -287,7 +292,8 @@ export class TranslationSession {
       this.ocrInFlight = false;
       this.latestMotionFrameId = 0;
       this.ocrFrameId = 0;
-      this.minimumOcrFrameId = 0;
+      this.translationQueue.clear();
+      this.replacementPolicy.reset();
       this.worker.postMessage({
         type: "reset",
         sessionId: this.generation,
@@ -314,7 +320,9 @@ export class TranslationSession {
       this.worker.addEventListener("error", (event) => {
         console.error("OCR worker failed:", event.message);
         this.workerReady = false;
-        this.#setStatus("error", "OCR worker failed to load");
+        this.#terminateWorker();
+        const detail = event.message ? `: ${event.message}` : "";
+        this.#setStatus("error", `OCR worker failed to load${detail}`);
       });
     }
 
@@ -578,11 +586,6 @@ export class TranslationSession {
     } else if (message.type === "ocr-result") {
       if (message.frameId !== this.ocrFrameId) return;
       this.ocrFrameId = 0;
-      if (message.frameId < this.minimumOcrFrameId) {
-        this.ocrInFlight = false;
-        this.nextOcrAt = 0;
-        return;
-      }
       this.#acceptOcrResult(message);
     } else if (message.type === "ocr-busy") {
       if (message.frameId !== this.ocrFrameId) return;
@@ -591,14 +594,17 @@ export class TranslationSession {
       this.nextOcrAt = performance.now() + 250;
     } else if (message.type === "error") {
       console.error(`OCR ${message.stage} failed:`, message.error);
-      if (message.stage === "init") this.workerReady = false;
+      if (message.stage === "init") {
+        this.workerReady = false;
+        this.#terminateWorker();
+      }
       if (message.stage === "sample") this.samplePending = false;
       if (message.stage === "ocr") {
         this.ocrInFlight = false;
         this.ocrFrameId = 0;
       }
       this.nextOcrAt = performance.now() + 2000;
-      this.#setStatus("error", `OCR ${message.stage} failed`);
+      this.#setStatus("error", workerErrorMessage(message));
     }
 
     this.#recordHandler(performance.now() - startedAt);
@@ -606,6 +612,7 @@ export class TranslationSession {
 
   #handleMotion(message) {
     const now = performance.now();
+    if (message.active) this.lastActivityAt = now;
     if (message.moved) {
       this.scrollAccum += message.dy;
       this.lastScrollAt = now;
@@ -614,17 +621,8 @@ export class TranslationSession {
 
     if (message.changed) {
       if (!this.changedSince) this.changedSince = now;
-      if (message.sceneChange && !message.moved && !this.sceneCleared) {
-        this.sceneCleared = true;
-        this.minimumOcrFrameId = Math.max(
-          this.minimumOcrFrameId,
-          message.frameId,
-        );
-        this.#clearResults(true);
-      }
     } else {
       this.changedSince = 0;
-      this.sceneCleared = false;
     }
 
     this.#tryOcr(now, message.changed);
@@ -646,9 +644,9 @@ export class TranslationSession {
     if (this.translatorState !== "ready" && this.initialOcrSent) return;
     if (this.translatorState === "unavailable") return;
 
-    const scrolling = now - this.lastScrollAt < SCROLL_SETTLE_MS;
+    const contentActive = now - this.lastActivityAt < SCROLL_SETTLE_MS;
     const deferredFor = this.changedSince ? now - this.changedSince : 0;
-    if (scrolling && deferredFor < MAX_SCROLL_DEFERRAL_MS) return;
+    if (contentActive && deferredFor < MAX_SCROLL_DEFERRAL_MS) return;
 
     this.#captureOcr();
   }
@@ -696,50 +694,93 @@ export class TranslationSession {
     this.ocrInFlight = false;
     this.hasOcrResult = true;
     this.changedSince = 0;
-    this.sceneCleared = false;
-    this.minimumOcrFrameId = 0;
     this.pixelBudget = message.policy.pixelBudget;
     this.ocrAverageMs = message.policy.averageMs;
     this.ocrCooldownMs = message.policy.cooldownMs;
     this.nextOcrAt = performance.now() + this.ocrCooldownMs;
     this.perf.counts = message.counts;
 
-    this.results = message.items.filter(
+    const items = message.items.filter(
       (item) => item.mean >= CONFIDENCE_MIN && isReadableText(item.text),
     );
-    this.resultWidth = message.width || 1;
-    this.resultHeight = message.height || 1;
-    this.resultScrollBase = message.captureScrollBase;
+    const batch = {
+      generation: this.generation,
+      pair: this.pairKey,
+      frameId: message.frameId,
+      items,
+      width: message.width || 1,
+      height: message.height || 1,
+      captureScrollBase: message.captureScrollBase,
+      promoted: false,
+    };
+    const action = this.replacementPolicy.submit(batch);
     this.#setStatus("ocr", "");
     this.#setStatus("error", "");
-    this.#applyScrollTransform();
-    this.#scheduleRender();
-    this.#queueTranslations();
+    if (!items.length) this.translationQueue.clear();
+    if (action === "clear") {
+      this.translationQueue.clear();
+      this.results = [];
+      this.resultWidth = batch.width;
+      this.resultHeight = batch.height;
+      this.resultScrollBase = batch.captureScrollBase;
+      this.lastAppliedScroll = NaN;
+      this.#scheduleRender();
+    } else if (!items.length) {
+      // A second settled pass confirms an empty viewport. Until then, keep
+      // the active overlay and schedule that confirmation after the cooldown.
+      this.hasOcrResult = false;
+    } else if (items.length) {
+      this.#queueTranslations();
+    }
     this.#updateHud();
   }
 
   #queueTranslations() {
-    if (!this.translator || this.translatorState !== "ready" || !this.results.length) {
-      this.#scheduleRender();
+    const batch = this.replacementPolicy.pending;
+    if (!batch || batch.generation !== this.generation || batch.pair !== this.pairKey) {
       return;
     }
 
     const uniqueTexts = [];
     const seen = new Set();
-    for (const item of this.results) {
+    let renderable = 0;
+    for (const item of batch.items) {
       const text = normalizeText(item.text);
       const cacheKey = `${this.pairKey}:${text}`;
-      if (!text || seen.has(cacheKey) || this.translationCache.get(cacheKey)) continue;
+      if (!text || seen.has(cacheKey)) continue;
       seen.add(cacheKey);
+      if (this.translationCache.get(cacheKey)) {
+        renderable++;
+        continue;
+      }
       uniqueTexts.push({ text, cacheKey });
+    }
+
+    if (this.replacementPolicy.markRenderable(batch, renderable)) {
+      this.#promoteBatch(batch);
+    }
+    if (!this.translator || this.translatorState !== "ready") return;
+    if (!uniqueTexts.length) {
+      this.replacementPolicy.finish(batch);
+      return;
     }
 
     this.translationQueue.replace(uniqueTexts, {
       generation: this.generation,
       pair: this.pairKey,
       translator: this.translator,
+      batch,
     });
     this.#pumpTranslations();
+  }
+
+  #promoteBatch(batch) {
+    this.results = batch.items;
+    this.resultWidth = batch.width;
+    this.resultHeight = batch.height;
+    this.resultScrollBase = batch.captureScrollBase;
+    this.lastAppliedScroll = NaN;
+    this.#scheduleRender();
   }
 
   async #pumpTranslations() {
@@ -747,11 +788,24 @@ export class TranslationSession {
     this.translationPumpRunning = true;
     try {
       while (this.translationQueue.current) {
-        const next = this.translationQueue.next((candidate) =>
-          Boolean(this.translationCache.get(candidate.cacheKey)),
-        );
-        if (!next) continue;
+        const currentJob = this.translationQueue.current;
+        const next = this.translationQueue.next();
+        if (!next) {
+          this.replacementPolicy.finish(currentJob.batch);
+          continue;
+        }
         const { job, entry } = next;
+        const cached = this.translationCache.get(entry.cacheKey);
+        if (cached) {
+          if (this.replacementPolicy.isCurrent(job.batch)) {
+            if (this.replacementPolicy.markRenderable(job.batch, 1)) {
+              this.#promoteBatch(job.batch);
+            } else if (job.batch.promoted) {
+              this.#scheduleRender();
+            }
+          }
+          continue;
+        }
         let promise = this.translationInFlight.get(entry.cacheKey);
         if (!promise) {
           promise = job.translator.translate(entry.text);
@@ -762,8 +816,15 @@ export class TranslationSession {
           const translated = await promise;
           // Pair-scoped text remains safe to cache even if a newer OCR result
           // superseded this job while the browser completed the active call.
-          this.translationCache.set(entry.cacheKey, translated);
-          if (job.pair === this.pairKey) this.#scheduleRender();
+          const renderable = normalizeText(translated);
+          if (renderable) this.translationCache.set(entry.cacheKey, translated);
+          if (renderable && this.replacementPolicy.isCurrent(job.batch)) {
+            if (this.replacementPolicy.markRenderable(job.batch, 1)) {
+              this.#promoteBatch(job.batch);
+            } else if (job.batch.promoted) {
+              this.#scheduleRender();
+            }
+          }
         } catch (error) {
           if (error?.name !== "AbortError") {
             console.warn("Translation failed for", JSON.stringify(entry.text), error);
@@ -879,6 +940,7 @@ export class TranslationSession {
     this.scrollAccum = 0;
     this.resultScrollBase = 0;
     this.lastScrollAt = 0;
+    this.lastActivityAt = 0;
     this.lastAppliedScroll = NaN;
     this.boxContainer.style.transform = "";
   }
@@ -887,6 +949,7 @@ export class TranslationSession {
     this.results = [];
     this.hasOcrResult = false;
     this.translationQueue.clear();
+    this.replacementPolicy.reset();
     this.boxContainer.replaceChildren();
     this.nodeMap.clear();
     if (resetScroll) this.#resetScroll();
@@ -902,7 +965,8 @@ export class TranslationSession {
       this.ocrInFlight = false;
       this.latestMotionFrameId = 0;
       this.ocrFrameId = 0;
-      this.minimumOcrFrameId = 0;
+      this.translationQueue.clear();
+      this.replacementPolicy.reset();
       this.worker?.postMessage({
         type: "reset",
         sessionId: this.generation,

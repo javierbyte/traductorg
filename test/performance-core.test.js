@@ -4,18 +4,20 @@ import assert from "node:assert/strict";
 import {
   AdaptiveOcrPolicy,
   LruCache,
+  OverlayReplacementPolicy,
   SupersedingQueue,
   buildAdaptiveParagraphs,
+  buildScrollFeatureMap,
   computeOverlayFontSize,
   computeOcrDimensions,
   displayPixelsToSampleRows,
   estimateVerticalShift,
   fingerprintImageData,
   isActiveGeneration,
+  isFrameActive,
   meanPixelDiff,
   quadToDisplayRect,
   inferOverlayTextAlign,
-  rowLumaProfile,
   selectReadableBoxes,
 } from "../performance-core.js";
 
@@ -136,60 +138,146 @@ test("image fingerprints are stable and frame diff detects changes", () => {
   assert.equal(meanPixelDiff(a.data, b.data), 0);
   b.data[0] = 250;
   assert.ok(meanPixelDiff(a.data, b.data) > 0);
+  assert.equal(isFrameActive(Infinity), false);
+  assert.equal(isFrameActive(1), false);
+  assert.equal(isFrameActive(2), true);
 });
 
-test("vertical shift reports content movement in display pixels", () => {
-  const previous = Float32Array.from([0, 0, 10, 20, 10, 0, 0, 0]);
-  const current = Float32Array.from([10, 20, 10, 0, 0, 0, 0, 0]);
-  const result = estimateVerticalShift(previous, current, 80, {
-    maxShiftRows: 3,
-    confidence: 0.1,
-  });
-  assert.equal(result.moved, true);
-  assert.ok(result.dy < -15 && result.dy > -25);
+function syntheticPage({ width = 32, height = 80, offset = 0, frame = 0, seed = 1 }) {
+  const data = new Uint8ClampedArray(width * height * 4);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const documentY = y + offset;
+      const textStroke =
+        documentY % 9 < 2 && x > 5 && x < width - 2
+          ? ((x * 17 + documentY * 13 + seed * 19) % 5 < 3 ? 35 : 225)
+          : 238 - ((documentY * 7 + x * 3 + seed * 11) % 18);
+      let value = textStroke;
+      if (y < 7) value = (x * 23 + frame * 71) % 256;
+      if (x < 5) value = (y * 29 + frame * 47) % 256;
+      const index = (y * width + x) * 4;
+      data.set([value, value, value, 255], index);
+    }
+  }
+  return { data, width, height };
+}
+
+function scrollEstimate(previous, current, displayHeight = 800, options = {}) {
+  const excludedRows = displayPixelsToSampleRows(
+    80,
+    current.height,
+    displayHeight,
+  );
+  return estimateVerticalShift(
+    buildScrollFeatureMap(previous, excludedRows),
+    buildScrollFeatureMap(current, excludedRows),
+    displayHeight,
+    options,
+  );
+}
+
+test("2D scroll matching tracks both directions despite fixed animated regions", () => {
+  const first = syntheticPage({ offset: 10, frame: 0 });
+  const second = syntheticPage({ offset: 14, frame: 1 });
+  const third = syntheticPage({ offset: 11, frame: 2 });
+  const downPage = scrollEstimate(first, second);
+  const upPage = scrollEstimate(second, third);
+
+  assert.equal(downPage.moved, true);
+  assert.ok(downPage.dy < -35 && downPage.dy > -45);
+  assert.equal(upPage.moved, true);
+  assert.ok(upPage.dy > 25 && upPage.dy < 35);
 });
 
-test("scroll profiles ignore a changing fixed-height navigation region", () => {
-  const image = (rows) => {
-    const data = new Uint8ClampedArray(rows.length * 4);
-    rows.forEach((value, index) => {
-      data.set([value, value, value, 255], index * 4);
-    });
-    return { data, width: 1, height: rows.length };
+test("2D scroll matching accumulates continuous movement and stops cleanly", () => {
+  const frames = [0, 3, 7].map((offset, frame) =>
+    syntheticPage({ offset, frame }),
+  );
+  const movement = [
+    scrollEstimate(frames[0], frames[1]).dy,
+    scrollEstimate(frames[1], frames[2]).dy,
+  ];
+  const stopped = scrollEstimate(
+    frames[2],
+    syntheticPage({ offset: 7, frame: 3 }),
+  );
+
+  assert.ok(Math.abs(movement[0] + movement[1] + 70) < 4);
+  assert.equal(stopped.moved, false);
+});
+
+test("2D scroll matching rejects unrelated scenes and ambiguous repetition", () => {
+  const noisePage = (seed) => {
+    const width = 32;
+    const height = 80;
+    const data = new Uint8ClampedArray(width * height * 4);
+    let state = seed;
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+        const value = state >>> 24;
+        data.set([value, value, value, 255], (y * width + x) * 4);
+      }
+    }
+    return { data, width, height };
   };
-  const previous = image([0, 90, 0, 20, 80, 180, 80, 20, 0, 0]);
-  const current = image([0, 245, 20, 80, 180, 80, 20, 0, 0, 0]);
-  const unfiltered = estimateVerticalShift(
-    rowLumaProfile(previous, 1),
-    rowLumaProfile(current, 1),
-    400,
-    { maxShiftRows: 3, confidence: 0.1 },
+  const sceneChange = scrollEstimate(
+    noisePage(1),
+    noisePage(99),
   );
-  const excludedRows = displayPixelsToSampleRows(80, 10, 400);
-  const previousProfile = rowLumaProfile(previous, 1, excludedRows);
-  const currentProfile = rowLumaProfile(current, 1, excludedRows);
-  const trackedHeight = 400 * (currentProfile.length / current.height);
-  const result = estimateVerticalShift(
-    previousProfile,
-    currentProfile,
-    trackedHeight,
-    { maxShiftRows: 3, confidence: 0.1 },
-  );
+  const repeated = (offset) => {
+    const width = 24;
+    const height = 80;
+    const data = new Uint8ClampedArray(width * height * 4);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const value = (y + offset) % 4 < 2 ? 30 : 230;
+        data.set([value, value, value, 255], (y * width + x) * 4);
+      }
+    }
+    return { data, width, height };
+  };
+  const ambiguous = scrollEstimate(repeated(0), repeated(2));
 
-  assert.equal(unfiltered.moved, false);
-  assert.equal(excludedRows, 2);
-  assert.equal(result.moved, true);
-  assert.ok(result.dy < -35 && result.dy > -45);
+  assert.equal(sceneChange.moved, false);
+  assert.equal(ambiguous.moved, false);
 });
 
 test("top exclusion leaves one sample row for very short displays", () => {
   assert.equal(displayPixelsToSampleRows(80, 200, 40), 199);
-  const profile = rowLumaProfile(
+  const features = buildScrollFeatureMap(
     { data: new Uint8ClampedArray(200 * 4), width: 1, height: 200 },
-    1,
     199,
   );
-  assert.equal(profile.length, 1);
+  assert.equal(features.height, 1);
+});
+
+test("overlay replacement waits for renderable content and confirms empty views", () => {
+  const policy = new OverlayReplacementPolicy(2);
+  const active = { generation: 1, pair: "de>en", items: [{ text: "old" }] };
+  const first = { generation: 1, pair: "de>en", items: [{ text: "new" }] };
+  const second = { generation: 1, pair: "de>en", items: [{ text: "newer" }] };
+
+  assert.equal(policy.submit(first), "hold");
+  assert.equal(policy.markRenderable(first, 0), false);
+  assert.equal(policy.submit(second), "hold");
+  assert.equal(policy.markRenderable(first, 1), false);
+  assert.equal(policy.markRenderable(second, 1), true);
+  assert.deepEqual(active.items.map((item) => item.text), ["old"]);
+
+  const third = { generation: 1, pair: "de>en", items: [{ text: "latest" }] };
+  assert.equal(policy.submit(third), "hold");
+  policy.finish(second);
+  assert.equal(policy.isCurrent(third), true);
+
+  assert.equal(
+    policy.submit({ generation: 1, pair: "de>en", items: [] }),
+    "hold",
+  );
+  assert.equal(
+    policy.submit({ generation: 1, pair: "de>en", items: [] }),
+    "clear",
+  );
 });
 
 test("overlay typography matches source scale within safe bounds", () => {
