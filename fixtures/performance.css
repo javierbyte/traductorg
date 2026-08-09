@@ -1,0 +1,116 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  color: #172033;
+  background: #f4f6fb;
+  font: 18px/1.45 system-ui, sans-serif;
+}
+
+nav {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  gap: 8px;
+  padding: 12px;
+  background: #172033;
+}
+
+button {
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+main {
+  max-width: 980px;
+  margin: auto;
+  padding: 36px;
+}
+
+section {
+  display: none;
+  min-height: 120vh;
+}
+
+section.active {
+  display: block;
+}
+
+h1 {
+  font-size: 42px;
+  letter-spacing: -0.04em;
+}
+
+.card {
+  margin: 20px 0;
+  padding: 22px;
+  border: 1px solid #ccd3df;
+  border-radius: 14px;
+  background: white;
+}
+
+.dark {
+  color: white;
+  background: #172033;
+}
+
+.rotated {
+  width: 420px;
+  margin: 90px auto;
+  transform: rotate(-5deg);
+}
+
+.dense {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+.dense p {
+  min-height: 90px;
+  margin: 0;
+  padding: 9px;
+  font-size: 12px;
+  background: white;
+  border: 1px solid #d8deea;
+}
+
+.subtitle-stage {
+  position: relative;
+  height: 70vh;
+  overflow: hidden;
+  border-radius: 18px;
+  background: linear-gradient(120deg, #172033, #6d28d9, #0891b2);
+}
+
+.orb {
+  position: absolute;
+  width: 220px;
+  height: 220px;
+  border-radius: 50%;
+  background: #fbbf24;
+  animation: drift 5s linear infinite alternate;
+}
+
+.subtitle {
+  position: absolute;
+  right: 10%;
+  bottom: 10%;
+  left: 10%;
+  padding: 14px;
+  color: white;
+  background: rgba(0, 0, 0, 0.82);
+  text-align: center;
+  font-size: 28px;
+}
+
+@keyframes drift {
+  to {
+    transform: translate(680px, 260px);
+  }
+}

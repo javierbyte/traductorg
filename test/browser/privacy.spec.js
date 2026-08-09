@@ -9,6 +9,10 @@ test("OCR stays on same-origin GET requests and CSP blocks external connections"
   page,
 }) => {
   const requests = [];
+  const consoleErrors = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
   page.on("request", (request) => {
     requests.push({
       url: request.url(),
@@ -18,7 +22,10 @@ test("OCR stays on same-origin GET requests and CSP blocks external connections"
     });
   });
 
-  await page.goto("/");
+  const mainResponse = await page.goto("/");
+  expect(mainResponse.headers()["content-security-policy"]).toContain(
+    "'wasm-unsafe-eval'",
+  );
   const externalFetch = await page.evaluate(async () => {
     try {
       await fetch("https://privacy-probe.invalid/captured-text");
@@ -33,6 +40,11 @@ test("OCR stays on same-origin GET requests and CSP blocks external connections"
   await expect(page.locator("html")).toHaveAttribute("data-result", "pass", {
     timeout: 100_000,
   });
+  expect(
+    consoleErrors.filter((message) =>
+      /WebAssembly.*violates|wasm.*failed|inline style violates/i.test(message),
+    ),
+  ).toEqual([]);
 
   for (const request of requests) {
     const url = new URL(request.url);
