@@ -3,12 +3,17 @@
 Live, on-device translation over a screen-shared video feed. German to English
 is the default; the source and target languages are selectable.
 
-## Product promises
+1. Free
+2. Local and private
+3. Open Source
 
 ### Free
 
 Translation Glass has no account, advertising, subscription, telemetry, usage
 fee, or paid API. Anyone may run their own copy under the GPL-3.0 license.
+Chrome and its built-in translation model are also free of charge, but they are
+proprietary: this promise covers cost for the user, and software freedom only
+for this project's own code.
 
 ### Local and private
 
@@ -17,16 +22,32 @@ OCR runs in a local browser worker and translation uses Chrome's built-in
 Translator API. There are no application API routes, uploads, analytics, or
 remote error-reporting services.
 
+This is the `Translator` JavaScript API, not Chrome's page-translate toolbar
+feature. The toolbar feature can send page text to Google's translation
+servers; the Translator API runs the model on the device. Chrome documents that
+no data is sent to Google or any third party when the model is used. On-device
+execution is Chrome's implementation choice rather than a requirement of the
+[Translator API specification](https://webmachinelearning.github.io/translation-api/),
+which leaves execution implementation-defined.
+
 The browser still makes ordinary network requests for the app's static files
 and same-origin OCR assets. A hosting provider can observe those requests and
 normal metadata such as the user's IP address, but the requests contain no
-captured pixels or recognized/translated text. Chrome may separately download
-browser-managed language packs. Selected language codes are stored only in
-browser `localStorage`.
+captured pixels or recognized/translated text. Chrome separately downloads
+browser-managed language packs from Google's servers; those downloads expose
+request metadata and the user's IP address to Google, never the captured pixels
+or the recognized and translated text. Selected language codes are stored only
+in browser `localStorage`.
+
+The promise covers what this application and the Translator API do. It does not
+cover Chrome's own unrelated network activity, such as Safe Browsing, profile
+sync, or usage metrics.
 
 ### Open source
 
-The application source is licensed under
+The application source lives at
+[github.com/javierbyte/traducto](https://github.com/javierbyte/traducto) and is
+licensed under
 [GNU GPL version 3](./LICENSE). Runtime libraries and OCR assets retain their
 own compatible licenses; see [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
 Chrome and its built-in translation model are external runtime requirements and
@@ -55,7 +76,11 @@ screen sharing. Production code contains no third-party runtime URL.
 
 ## Requirements
 
-- Chrome desktop with the built-in Translator API.
+- Chrome desktop with the built-in Translator API. The API is not available on
+  mobile.
+- Free disk space for Chrome's translation models. Chrome asks for at least
+  22 GB free on the volume holding the Chrome profile, and removes a downloaded
+  model if free space later falls below 10 GB.
 - A secure context. `localhost` works for local development.
 - Cross-origin isolation for multi-threaded WebAssembly. The Vite development
   and preview servers provide the necessary COOP/COEP headers. A self-hosted
