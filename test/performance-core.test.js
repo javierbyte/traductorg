@@ -280,11 +280,11 @@ test("overlay replacement waits for renderable content and confirms empty views"
   );
 });
 
-test("overlay typography matches source scale within safe bounds", () => {
+test("overlay typography preserves giant headings and a readable minimum", () => {
   assert.equal(computeOverlayFontSize(20, 1), 18);
   assert.equal(computeOverlayFontSize(40, 2), 18);
   assert.equal(computeOverlayFontSize(4, 1), 9);
-  assert.equal(computeOverlayFontSize(200, 1), 96);
+  assert.equal(computeOverlayFontSize(200, 1), 180);
 });
 
 test("overlay alignment centers only obvious single-line text", () => {
@@ -306,7 +306,7 @@ test("overlay alignment centers only obvious single-line text", () => {
   );
 });
 
-test("quad mapping preserves position, size, and rotation", () => {
+test("quad mapping preserves position and size", () => {
   const rect = quadToDisplayRect(
     [[10, 10], [30, 10], [30, 20], [10, 20]],
     100,
@@ -319,4 +319,15 @@ test("quad mapping preserves position, size, and rotation", () => {
     { left: 20, top: 20, width: 40, height: 20 },
   );
   assert.equal(rect.angle, 0);
+});
+
+test("OCR skew stays horizontal without inflating the font to the bounding height", () => {
+  const rect = quadToDisplayRect(
+    [[10, 10], [110, 28], [110, 48], [10, 30]],
+    200, 100, 400, 200,
+  );
+  assert.equal(rect.angle, 0);
+  assert.ok(Math.abs(rect.width - 200) < 1e-9);
+  assert.equal(rect.height, 76);
+  assert.equal(computeOverlayFontSize(rect.boxHeight, 1), 36);
 });

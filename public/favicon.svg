@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>traduct.org</title>
+  <!-- A flat reduction of the page's translation pipe: barrel, collar, bore.
+       No gradients and thick outlines, so it survives being drawn at 16px. -->
+  <rect width="64" height="64" rx="14" fill="#e9ffda" />
+  <g stroke="#397d4d" stroke-width="3" stroke-linejoin="round">
+    <path d="M8 23.5 H43 V40.5 H8 A2.4 8.5 0 0 1 8 23.5Z" fill="#4d9e54" />
+    <ellipse cx="45.5" cy="32" rx="10" ry="15" fill="#73bd74" />
+    <ellipse cx="46.5" cy="32" rx="5" ry="9" fill="#163f30" stroke-width="2.5" />
+  </g>
+</svg>

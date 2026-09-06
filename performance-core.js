@@ -1,4 +1,13 @@
-export const OCR_POLICY_DEFAULTS = Object.freeze({
+// traduct.org — live local OCR and translation overlay
+// Copyright (C) 2026 Javier Bórquez
+//
+// This program is free software: you can redistribute it and/or modify it
+// under the terms of the GNU General Public License, version 3, as published
+// by the Free Software Foundation. It is distributed WITHOUT ANY WARRANTY;
+// without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+// PARTICULAR PURPOSE. See the LICENSE file distributed with this source.
+
+const OCR_POLICY_DEFAULTS = Object.freeze({
   initialPixels: 1_500_000,
   minPixels: 1_000_000,
   maxPixels: 2_000_000,
@@ -27,7 +36,7 @@ export const MOTION_DEFAULTS = Object.freeze({
   maxResidual: 0.9,
 });
 
-export function clamp(value, min, max) {
+function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
@@ -242,7 +251,7 @@ export function normalizeText(text) {
   return String(text || "").trim().replace(/\s+/g, " ");
 }
 
-export function meanRgbDistance(colors) {
+function meanRgbDistance(colors) {
   if (!colors || colors.length < 2) return 0;
   const base = colors[0] || [255, 255, 255];
   let maxDistance = 0;
@@ -290,12 +299,12 @@ export function buildAdaptiveParagraphs(lines, layout, maxColorDistance = 48) {
   return output;
 }
 
-export function quadHeight(box) {
+function quadHeight(box) {
   if (!box || box.length < 4) return 0;
   return Math.hypot(box[3][0] - box[0][0], box[3][1] - box[0][1]);
 }
 
-export function quadArea(box) {
+function quadArea(box) {
   if (!box || box.length < 4) return 0;
   let area = 0;
   for (let i = 0; i < box.length; i++) {
@@ -564,14 +573,15 @@ export function quadToDisplayRect(box, imageWidth, imageHeight, displayWidth, di
     top,
     width: right - left,
     height: bottom - top,
-    angle: Math.atan2(topRight[1] - topLeft[1], topRight[0] - topLeft[0]),
+    // UI text is horizontal; detector skew must never rotate the overlay.
+    angle: 0,
     boxHeight: Math.hypot(bottomLeft[0] - topLeft[0], bottomLeft[1] - topLeft[1]),
   };
 }
 
 export function computeOverlayFontSize(boxHeight, lineCount = 1) {
   const sourceLineHeight = Math.max(1, boxHeight / Math.max(1, lineCount || 1));
-  return clamp(sourceLineHeight * 0.9, 9, 96);
+  return Math.max(9, sourceLineHeight * 0.9);
 }
 
 export function inferOverlayTextAlign(rect, lineCount, displayWidth) {

@@ -1,8 +1,16 @@
+// traduct.org — live local OCR and translation overlay
+// Copyright (C) 2026 Javier Bórquez
+//
+// This program is free software: you can redistribute it and/or modify it
+// under the terms of the GNU General Public License, version 3, as published
+// by the Free Software Foundation. It is distributed WITHOUT ANY WARRANTY;
+// without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+// PARTICULAR PURPOSE. See the LICENSE file distributed with this source.
+
 import {
   LruCache,
   OverlayReplacementPolicy,
   SupersedingQueue,
-  clamp,
   computeOverlayFontSize,
   computeOcrDimensions,
   inferOverlayTextAlign,
@@ -20,8 +28,6 @@ const RESOURCE_GRACE_MS = 60_000;
 const CONFIDENCE_MIN = 0.4;
 const CACHE_MAX = 1000;
 const TEXT_RE = /\p{Letter}{2,}/u;
-const FONT_FAMILY = "system-ui, -apple-system, sans-serif";
-
 function modelForLanguage(language) {
   return language === "zh" ? "zh" : "latin";
 }
@@ -31,35 +37,6 @@ function isReadableText(value) {
   if (!TEXT_RE.test(text)) return false;
   const letters = text.replace(/[^\p{Letter}]/gu, "").length;
   return letters / Math.max(1, text.length) >= 0.5;
-}
-
-function rgb(style, key, fallback) {
-  const value = style?.[key];
-  if (!Array.isArray(value) || value.length < 3) return fallback;
-  return value.slice(0, 3).map((channel) => clamp(Math.round(channel), 0, 255));
-}
-
-function relativeLuminance([red, green, blue]) {
-  const values = [red, green, blue].map((channel) => {
-    const value = channel / 255;
-    return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
-  });
-  return values[0] * 0.2126 + values[1] * 0.7152 + values[2] * 0.0722;
-}
-
-function contrastRatio(first, second) {
-  const a = relativeLuminance(first);
-  const b = relativeLuminance(second);
-  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
-}
-
-function contrastText(background, preferred) {
-  if (contrastRatio(background, preferred) >= 4.5) return preferred;
-  const black = [0, 0, 0];
-  const white = [255, 255, 255];
-  return contrastRatio(background, black) >= contrastRatio(background, white)
-    ? black
-    : white;
 }
 
 function percentile(values, amount) {
@@ -75,7 +52,7 @@ function workerErrorMessage(message) {
   return `${prefix}: ${detail.slice(0, 240)}`;
 }
 
-// The app's single runtime contract: prepare(options), start(stream),
+// The app's single runtime contract: prepare(options), start(),
 // setLanguages(source, target), stop(), and dispose().
 export class TranslationSession {
   constructor({ video, overlay }) {
@@ -88,8 +65,6 @@ export class TranslationSession {
     this.statusElement.className = "translate-status";
     this.overlay.replaceChildren(this.boxContainer, this.statusElement);
 
-    this.sourceLanguage = "de";
-    this.targetLanguage = "en";
     this.pairKey = "de>en";
     this.sameLanguage = false;
     this.modelId = "latin";
@@ -131,7 +106,6 @@ export class TranslationSession {
     this.nextOcrAt = 0;
     this.changedSince = 0;
     this.lastActivityAt = 0;
-    this.lastScrollAt = 0;
 
     this.scrollAccum = 0;
     this.resultScrollBase = 0;
@@ -174,13 +148,19 @@ export class TranslationSession {
     return this.translatorPromise || Promise.resolve();
   }
 
+  waitForOcr() {
+    if (this.sameLanguage || this.workerReady) return Promise.resolve();
+    if (!this.worker) return Promise.reject(new Error("OCR could not load. Please try again online."));
+    return new Promise((resolve, reject) => {
+      this.ocrPreparation = { resolve, reject };
+    });
+  }
+
   setLanguages(sourceLanguage, targetLanguage) {
     const nextPair = `${sourceLanguage}>${targetLanguage}`;
     const nextModel = modelForLanguage(sourceLanguage);
     const changed = nextPair !== this.pairKey;
 
-    this.sourceLanguage = sourceLanguage;
-    this.targetLanguage = targetLanguage;
     this.pairKey = nextPair;
     this.sameLanguage = sourceLanguage === targetLanguage;
     this.modelId = nextModel;
@@ -214,10 +194,9 @@ export class TranslationSession {
     if (this.active) this.#startFrameLoop();
   }
 
-  start(stream) {
+  start() {
     clearTimeout(this.releaseTimer);
     this.releaseTimer = 0;
-    this.stream = stream;
     this.active = true;
     this.frameId = 0;
     this.latestMotionFrameId = 0;
@@ -230,7 +209,6 @@ export class TranslationSession {
     this.nextOcrAt = 0;
     this.changedSince = 0;
     this.lastActivityAt = 0;
-    this.lastScrollAt = 0;
     this.#resetScroll();
 
     if (!this.sameLanguage && this.translatorState !== "unavailable") {
@@ -240,6 +218,8 @@ export class TranslationSession {
   }
 
   stop() {
+    this.ocrPreparation?.reject(new Error("Screen sharing stopped."));
+    this.ocrPreparation = null;
     if (!this.active && this.releaseTimer) return;
     this.active = false;
     this.generation++;
@@ -284,6 +264,8 @@ export class TranslationSession {
     }
     this.displayWidth = roundedWidth;
     this.displayHeight = roundedHeight;
+    this.boxContainer.style.setProperty("--gradient-width", `${roundedWidth}px`);
+    this.boxContainer.style.setProperty("--gradient-height", `${roundedHeight}px`);
     this.#resetScroll();
     this.#scheduleRender();
     if (this.workerReady) {
@@ -344,6 +326,8 @@ export class TranslationSession {
   }
 
   #terminateWorker() {
+    this.ocrPreparation?.reject(new Error("OCR could not load. Please try again online."));
+    this.ocrPreparation = null;
     if (!this.worker) return;
     this.worker.postMessage({
       type: "dispose",
@@ -572,6 +556,8 @@ export class TranslationSession {
       this.#setStatus("ocr", message.message);
     } else if (message.type === "ready") {
       this.workerReady = true;
+      this.ocrPreparation?.resolve();
+      this.ocrPreparation = null;
       this.pixelBudget = message.policy.pixelBudget;
       this.ocrAverageMs = message.policy.averageMs;
       this.ocrCooldownMs = message.policy.cooldownMs;
@@ -615,8 +601,7 @@ export class TranslationSession {
     if (message.active) this.lastActivityAt = now;
     if (message.moved) {
       this.scrollAccum += message.dy;
-      this.lastScrollAt = now;
-      if (this.results.length) this.#applyScrollTransform();
+        if (this.results.length) this.#applyScrollTransform();
     }
 
     if (message.changed) {
@@ -873,9 +858,6 @@ export class TranslationSession {
       const key = `${item.id}:${this.pairKey}`;
       const node = this.nodeMap.get(key) || document.createElement("div");
 
-      const background = rgb(item.style, "bg", [245, 245, 245]);
-      const preferredText = rgb(item.style, "text", [0, 0, 0]);
-      const textColor = contrastText(background, preferredText);
       const fontSize = computeOverlayFontSize(rect.boxHeight, item.lineCount);
       const textAlign = inferOverlayTextAlign(
         rect,
@@ -883,6 +865,7 @@ export class TranslationSession {
         this.displayWidth,
       );
       const padding = 4;
+      const singleLine = (item.lineCount || 1) === 1;
       const signature = [
         translated,
         rect.left,
@@ -892,27 +875,29 @@ export class TranslationSession {
         rect.angle,
         fontSize,
         textAlign,
-        ...background,
-        ...textColor,
+        singleLine,
       ].join("|");
 
       if (node.translationSignature !== signature) {
         node.translationSignature = signature;
         node.className = `translate-box${
           textAlign === "center" ? " is-centered" : ""
-        }`;
+        }${singleLine ? " is-single-line" : ""}`;
         node.textContent = translated;
         node.style.left = `${rect.left - padding}px`;
         node.style.top = `${rect.top - padding}px`;
-        node.style.width = `${rect.width + padding * 2}px`;
+        node.style.width = singleLine ? "max-content" : `${rect.width + padding * 2}px`;
+        node.style.minWidth = singleLine ? `${rect.width + padding * 2}px` : "";
         node.style.height = `${rect.height + padding * 2}px`;
         node.style.fontSize = `${fontSize}px`;
-        node.style.fontFamily = FONT_FAMILY;
-        node.style.backgroundColor = `rgba(${background.join(",")},0.96)`;
-        node.style.color = `rgb(${textColor.join(",")})`;
-        node.style.transform = `rotate(${rect.angle}rad)`;
+        // Each box reveals its coordinates in one shared gradient canvas.
+        node.style.setProperty("--gradient-x", `${padding - rect.left}px`);
+        node.style.setProperty("--gradient-y", `${padding - rect.top}px`);
       }
 
+      node.sourceCenter = singleLine && textAlign === "center"
+        ? rect.left + rect.width / 2
+        : null;
       nextNodes.set(key, node);
       desiredNodes.push(node);
     }
@@ -925,6 +910,14 @@ export class TranslationSession {
       const current = this.boxContainer.children[index];
       if (current !== node) this.boxContainer.insertBefore(node, current || null);
     }
+    // Read intrinsic widths together before positioning expanded, centered headings.
+    const centeredPositions = desiredNodes
+      .filter((node) => node.sourceCenter !== null)
+      .map((node) => [node, node.sourceCenter - node.offsetWidth / 2]);
+    for (const [node, left] of centeredPositions) {
+      node.style.left = `${left}px`;
+      node.style.setProperty("--gradient-x", `${-left}px`);
+    }
     this.nodeMap = nextNodes;
     this.#applyScrollTransform();
   }
@@ -933,15 +926,16 @@ export class TranslationSession {
     const offset = this.scrollAccum - this.resultScrollBase;
     if (Math.abs(offset - this.lastAppliedScroll) < 0.05) return;
     this.lastAppliedScroll = offset;
+    this.boxContainer.style.setProperty("--gradient-scroll", `${offset}px`);
     this.boxContainer.style.transform = `translate3d(0, ${offset}px, 0)`;
   }
 
   #resetScroll() {
     this.scrollAccum = 0;
     this.resultScrollBase = 0;
-    this.lastScrollAt = 0;
     this.lastActivityAt = 0;
     this.lastAppliedScroll = NaN;
+    this.boxContainer.style.setProperty("--gradient-scroll", "0px");
     this.boxContainer.style.transform = "";
   }
 

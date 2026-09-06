@@ -6,6 +6,7 @@ const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const PRODUCTION_FILES = [
   "index.html",
   "script.js",
+  "examples.js",
   "ocr.js",
   "ocr-worker.js",
   "performance-core.js",
@@ -13,6 +14,24 @@ const PRODUCTION_FILES = [
   "asset-manifest.js",
   "style.css",
 ];
+
+// Markup legitimately carries absolute URLs that are not loads the app performs:
+// canonical/Open Graph metadata, and links the reader may choose to follow.
+// Strip exactly those, then hold the remainder to the same blanket rule — so a
+// new <script src>, <link rel=stylesheet href> or <img src> pointing off-origin
+// still fails the audit.
+const INERT_MARKUP_URL = [
+  /<a\b[^>]*?\bhref="[^"]*"/gis,
+  /<meta\b[^>]*?\bcontent="[^"]*"/gis,
+  /<link\b[^>]*?\brel="canonical"[^>]*>/gis,
+];
+
+function stripInertMarkupUrls(source) {
+  return INERT_MARKUP_URL.reduce(
+    (text, pattern) => text.replace(pattern, ""),
+    source,
+  );
+}
 
 const FORBIDDEN = [
   [/https?:\/\//i, "remote URL"],
@@ -24,7 +43,10 @@ const FORBIDDEN = [
 
 const failures = [];
 for (const relativePath of PRODUCTION_FILES) {
-  const source = await readFile(join(ROOT, relativePath), "utf8");
+  const raw = await readFile(join(ROOT, relativePath), "utf8");
+  const source = relativePath.endsWith(".html")
+    ? stripInertMarkupUrls(raw)
+    : raw;
   for (const [pattern, description] of FORBIDDEN) {
     if (pattern.test(source)) failures.push(`${relativePath}: ${description}`);
   }

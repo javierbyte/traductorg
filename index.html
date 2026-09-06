@@ -4,13 +4,27 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <title>Translation Glass — Live on-device translation</title>
+  <title>traduct.org — read a foreign screen in your own language</title>
   <meta name="description"
-    content="Share a screen and see its text translated on-device, overlaid live on the feed." />
-  <meta name="theme-color" content="#000000" />
+    content="Share a window of text in one language and read it in another, translated live on your own machine." />
+  <link rel="canonical" href="https://traduct.org/" />
+  <meta property="og:site_name" content="traduct.org" />
+  <meta property="og:url" content="https://traduct.org/" />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="traduct.org — read a foreign screen in your own language" />
+  <meta property="og:description"
+    content="Share a window of text in one language and read it in another, translated live on your own machine." />
+  <meta property="og:image" content="https://traduct.org/traduct-org.jpg" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:image" content="https://traduct.org/traduct-org.jpg" />
+  <meta name="theme-color" content="#ffffff" />
   <meta http-equiv="Content-Security-Policy"
     content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self'; worker-src 'self' blob:; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'" />
 
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="preload" href="/fonts/InterVariable.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="stylesheet" href="style.css" />
 </head>
 
@@ -22,26 +36,178 @@
   <div id="lang-bar"></div>
 
   <div id="intro">
-    <div id="intro-lang"></div>
-    <p>
-      Share a screen with text in the source language<br />
-      to see it translated live.
-    </p>
-    <button id="share-btn" type="button">Share video to translate</button>
-    <p class="runtime-note">Chrome desktop only. Translation runs on-device.</p>
-    <details id="privacy-details">
-      <summary>Free, local, and open-source details</summary>
-      <div class="privacy-copy">
-        <p><strong>Free:</strong> no account, ads, subscription, telemetry, or usage fees.</p>
-        <p><strong>Local:</strong> screen pixels and recognized or translated text stay on this device.</p>
-        <p><strong>Open source:</strong> the application source is licensed under GPL-3.0.</p>
-        <p>
-          The app downloads ordinary static files and OCR models from its host. Chrome may separately
-          download language packs. Hosts can observe normal asset requests and IP metadata, but the app
-          never uploads captured content or text. Language choices are stored only in this browser.
+    <main class="guide">
+
+      <header class="masthead">
+        <h1 class="wordmark">traduct.org</h1>
+        <p class="tagline">
+          Live, local OCR and translation. Chrome on desktop only.
         </p>
-      </div>
-    </details>
+        <div class="actions">
+          <button id="share-btn" type="button">Share a window to translate</button>
+          <div id="intro-lang"></div>
+        </div>
+        <p id="startup-status" class="hint" role="status" aria-live="polite" hidden></p>
+        <p class="hint">
+          Chrome asks what to share — pick the window that has the text in it.
+        </p>
+        <!-- Shown instead of the hint when the browser has no Translator API. -->
+        <p class="unsupported" id="unsupported" role="alert" hidden>
+          This browser has no built-in Translator API, so there is nothing to
+          translate with. Open traduct.org in Chrome 138 or later on the desktop.
+        </p>
+      </header>
+
+      <section class="desktop-demo" aria-label="Original and translated windows open side by side on one screen">
+        <div class="desktop-monitor">
+          <div class="desktop-screen">
+            <div class="compare">
+        <figure class="browser" id="example-source" lang="de">
+          <div class="browser-bar">
+            <span class="mock-dot"></span><span class="mock-dot"></span><span class="mock-dot"></span>
+            <span class="browser-url">museum.de/nachtwache</span>
+          </div>
+          <div class="browser-page">
+            <p class="browser-title">Die Nachtwache</p>
+            <p>Gemalt 1642 in Amsterdam.</p>
+            <p>Öl auf Leinwand, 379 × 453 cm.</p>
+            <p>Das Bild wurde später beschnitten.</p>
+            <p>Restauriert im Sommer 2019.</p>
+          </div>
+          <figcaption lang="en"><label class="example-badge">Original: <strong class="badge-language">German</strong></label></figcaption>
+        </figure>
+
+        <div class="compare-arrow" aria-hidden="true">
+          <svg viewBox="0 0 24 12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M1 6h20M16.6 1.4 22 6l-5.4 4.6" />
+          </svg>
+        </div>
+
+        <figure class="browser" id="example-target" lang="en">
+          <div class="browser-bar">
+            <span class="mock-dot"></span><span class="mock-dot"></span><span class="mock-dot"></span>
+            <span class="browser-url">traduct.org</span>
+          </div>
+          <div class="browser-page">
+            <p class="browser-title"><span class="hl">The Night Watch</span></p>
+            <p><span class="hl">Painted in 1642 in Amsterdam.</span></p>
+            <p><span class="hl">Oil on canvas, 379 × 453 cm.</span></p>
+            <p><span class="hl">The picture was later cut down.</span></p>
+            <p><span class="hl">Restored in the summer of 2019.</span></p>
+          </div>
+          <figcaption lang="en"><label class="example-badge is-translated">Translated: <strong class="badge-language">English</strong></label></figcaption>
+        </figure>
+            </div>
+          </div>
+        </div>
+        <div class="desktop-stand" aria-hidden="true">
+          <div class="desktop-neck"></div>
+          <div class="desktop-foot"></div>
+        </div>
+        <p class="desktop-caption">Keep the original open. Read the translation right beside it.</p>
+      </section>
+
+      <section class="how">
+        <h2 class="how-heading">How it works</h2>
+        <div class="how-grid">
+          <div class="how-item">
+            <h3 class="how-title tone-red">Reading</h3>
+            <p>
+              A PaddleOCR model finds the text in the shared video, running in
+              a worker through
+              <a href="https://github.com/xushengfeng/eSearch-OCR" target="_blank" rel="noopener">eSearch OCR</a>
+              and ONNX Runtime on WebAssembly. It runs entirely on your machine:
+              the models load once from this site, and no pixel is ever sent
+              anywhere.
+            </p>
+          </div>
+          <div class="how-item">
+            <h3 class="how-title tone-blue">Translating</h3>
+            <p>
+              Chrome's built-in Translator API translates the recognized text. Chrome
+              <a href="https://developer.chrome.com/docs/ai/translator-api" target="_blank" rel="noopener">documents it
+                as client-side</a>,
+              using models downloaded for your chosen languages and stored on your
+              device. Once those models are ready, you can keep translating
+              without an internet connection.
+            </p>
+          </div>
+          <div class="how-item">
+            <h3 class="how-title tone-green">Drawing</h3>
+            <p>
+              traduct.org measures how far the page scrolled and moves the text it
+              already read, instead of recognizing it again. That is what makes
+              scrolling readable rather than a flicker of re-translations.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section class="pipe-demo" id="pipe-demo"
+        aria-label="A playful translation: German words enter a green pipe and come out in English">
+        <div class="pipe-stage" aria-hidden="true">
+          <div class="pipe-lane pipe-lane-in" lang="de">
+            <div class="pipe-track">
+              <span class="pipe-word-group"><span class="pipe-word">Hallo Welt!</span><span class="pipe-word">Wunderbar!</span><span class="pipe-word">Los geht’s!</span></span>
+              <span class="pipe-word-group"><span class="pipe-word">Hallo Welt!</span><span class="pipe-word">Wunderbar!</span><span class="pipe-word">Los geht’s!</span></span>
+            </div>
+          </div>
+          <svg class="translation-pipe" viewBox="0 0 184 112" fill="none" aria-hidden="true">
+            <defs>
+              <linearGradient id="pipe-shell" x1="0" y1="24" x2="0" y2="88" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#4d9e54" />
+                <stop offset=".23" stop-color="#b1ed91" />
+                <stop offset=".48" stop-color="#70c86b" />
+                <stop offset="1" stop-color="#2c7947" />
+              </linearGradient>
+              <linearGradient id="pipe-collar" x1="0" y1="14" x2="0" y2="98" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#73bd74" />
+                <stop offset=".25" stop-color="#c7f3ad" />
+                <stop offset=".6" stop-color="#75c57a" />
+                <stop offset="1" stop-color="#3b8b58" />
+              </linearGradient>
+              <linearGradient id="pipe-face" x1="150" y1="20" x2="172" y2="92" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#d5f6bd" />
+                <stop offset="1" stop-color="#64ad6e" />
+              </linearGradient>
+              <linearGradient id="pipe-inside" x1="154" y1="56" x2="174" y2="56" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#163f30" />
+                <stop offset="1" stop-color="#35734b" />
+              </linearGradient>
+            </defs>
+            <!-- Equal ellipses and parallel sides: one orthographic projection. -->
+            <path d="M20 14 H32 A12 42 0 0 1 32 98 H20 A12 42 0 0 1 20 14Z"
+              fill="url(#pipe-collar)" stroke="#397d4d" />
+            <ellipse cx="32" cy="56" rx="12" ry="42" fill="url(#pipe-collar)" stroke="#397d4d" />
+            <!-- The barrel covers the center of the inlet's rear shoulder. -->
+            <path d="M32 24 H152 V88 H32 A9 32 0 0 1 32 24Z"
+              fill="url(#pipe-shell)" stroke="#397d4d" />
+            <path d="M150 14 H162 A12 42 0 0 1 162 98 H150 A12 42 0 0 1 150 14Z"
+              fill="url(#pipe-collar)" stroke="#397d4d" />
+            <ellipse cx="162" cy="56" rx="12" ry="42" fill="url(#pipe-face)" stroke="#397d4d" />
+            <ellipse cx="163" cy="56" rx="7" ry="33" fill="url(#pipe-inside)" stroke="#438456" />
+            <path d="M81 51 L75 56 L81 61 M75 56 H101 M95 51 L101 56 L95 61"
+              stroke="#e9ffda" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          <div class="pipe-lane pipe-lane-out" lang="en">
+            <div class="pipe-track">
+              <span class="pipe-word-group"><span class="pipe-word">Hello world!</span><span class="pipe-word">Wonderful!</span><span class="pipe-word">Let’s go!</span></span>
+              <span class="pipe-word-group"><span class="pipe-word">Hello world!</span><span class="pipe-word">Wonderful!</span><span class="pipe-word">Let’s go!</span></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <footer class="colophon">
+        <p>
+          Made by <a href="https://javier.xyz" target="_blank" rel="noopener">Javier</a>.
+          Find me on <a href="https://x.com/javierbyte" target="_blank" rel="noopener">X (@javierbyte)</a>.
+          <a href="https://github.com/javierbyte/traducto" target="_blank" rel="noopener">Source on GitHub</a>.
+          Copyright &copy; 2026 Javier B&oacute;rquez. Licensed under GPL-3.0.
+        </p>
+      </footer>
+
+    </main>
   </div>
 
   <script type="module" src="script.js"></script>

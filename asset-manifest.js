@@ -1,3 +1,12 @@
+// traduct.org — live local OCR and translation overlay
+// Copyright (C) 2026 Javier Bórquez
+//
+// This program is free software: you can redistribute it and/or modify it
+// under the terms of the GNU General Public License, version 3, as published
+// by the Free Software Foundation. It is distributed WITHOUT ANY WARRANTY;
+// without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+// PARTICULAR PURPOSE. See the LICENSE file distributed with this source.
+
 export const OCR_ASSET_MANIFEST = Object.freeze({
   ortWasm: Object.freeze({
     path: "ocr-assets/ort-wasm-simd-threaded.wasm",

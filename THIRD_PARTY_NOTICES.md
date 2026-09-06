@@ -1,9 +1,9 @@
 # Third-party notices
 
-Translation Glass is licensed under GPL-3.0-only. The following components are
+traduct.org is licensed under GPL-3.0-only. The following components are
 distributed with or used to build the application under their own licenses.
 Those licenses apply to the respective third-party components; GPL-3.0 applies
-to Translation Glass's original application code.
+to traduct.org's original application code.
 
 ## Runtime libraries
 
@@ -30,6 +30,14 @@ to Translation Glass's original application code.
 - License for package code: MIT License.
 - License text: [`licenses/MIT.txt`](./licenses/MIT.txt).
 - Copyright: paddleocr-browser contributors.
+
+### Inter 4.1
+
+- Purpose: the interface typeface, self-hosted as `public/fonts/InterVariable*.woff2`.
+- Source: https://github.com/rsms/inter
+- License: SIL Open Font License 1.1.
+- License text: [`licenses/OFL-1.1.txt`](./licenses/OFL-1.1.txt).
+- Copyright: 2016 The Inter Project Authors.
 
 ## OCR models and dictionaries
 

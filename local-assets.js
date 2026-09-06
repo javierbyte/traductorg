@@ -1,3 +1,12 @@
+// traduct.org — live local OCR and translation overlay
+// Copyright (C) 2026 Javier Bórquez
+//
+// This program is free software: you can redistribute it and/or modify it
+// under the terms of the GNU General Public License, version 3, as published
+// by the Free Software Foundation. It is distributed WITHOUT ANY WARRANTY;
+// without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+// PARTICULAR PURPOSE. See the LICENSE file distributed with this source.
+
 import { OCR_ASSET_MANIFEST } from "./asset-manifest.js";
 
 const SAFE_ASSET_PATH = /^ocr-assets\/[a-z0-9][a-z0-9._-]*$/;
