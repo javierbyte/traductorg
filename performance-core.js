@@ -8,9 +8,9 @@
 // PARTICULAR PURPOSE. See the LICENSE file distributed with this source.
 
 const OCR_POLICY_DEFAULTS = Object.freeze({
-  initialPixels: 1_500_000,
-  minPixels: 1_000_000,
-  maxPixels: 2_000_000,
+  initialPixels: 1_650_000,
+  minPixels: 1_100_000,
+  maxPixels: 2_200_000,
   targetMs: 900,
   lowerMs: 650,
   upperMs: 1200,
@@ -52,6 +52,26 @@ export function computeOcrDimensions(sourceWidth, sourceHeight, pixelBudget) {
   const width = Math.max(1, Math.round(sourceWidth * scale));
   const height = Math.max(1, Math.round(sourceHeight * scale));
   return { width, height, pixels: width * height };
+}
+
+export function computeOcrCropRect(
+  imageWidth,
+  imageHeight,
+  displayWidth,
+  displayHeight,
+  insetCssPixels = 64,
+) {
+  const width = Math.max(1, Math.round(imageWidth) || 1);
+  const height = Math.max(1, Math.round(imageHeight) || 1);
+  if (!(displayWidth > 0) || !(displayHeight > 0) || !(insetCssPixels > 0)) {
+    return { x: 0, y: 0, width, height };
+  }
+
+  const horizontalInset = Math.min(insetCssPixels, displayWidth / 4);
+  const verticalInset = Math.min(insetCssPixels, displayHeight / 4);
+  const x = Math.round((horizontalInset / displayWidth) * width);
+  const y = Math.round((verticalInset / displayHeight) * height);
+  return { x, y, width: width - x * 2, height: height - y * 2 };
 }
 
 export class AdaptiveOcrPolicy {
@@ -581,7 +601,8 @@ export function quadToDisplayRect(box, imageWidth, imageHeight, displayWidth, di
 
 export function computeOverlayFontSize(boxHeight, lineCount = 1) {
   const sourceLineHeight = Math.max(1, boxHeight / Math.max(1, lineCount || 1));
-  return Math.max(9, sourceLineHeight * 0.9);
+  const fontSize = Math.max(9, sourceLineHeight * 0.9);
+  return fontSize > 14 ? fontSize * 0.9 : fontSize;
 }
 
 export function inferOverlayTextAlign(rect, lineCount, displayWidth) {

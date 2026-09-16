@@ -9,6 +9,7 @@ import {
   buildAdaptiveParagraphs,
   buildScrollFeatureMap,
   computeOverlayFontSize,
+  computeOcrCropRect,
   computeOcrDimensions,
   displayPixelsToSampleRows,
   estimateVerticalShift,
@@ -33,19 +34,40 @@ test("OCR dimensions preserve aspect ratio and obey the pixel ceiling", () => {
   });
 });
 
+test("OCR crop excludes a 64px display border while retaining full-frame coordinates", () => {
+  assert.deepEqual(computeOcrCropRect(1920, 1080, 1920, 1080), {
+    x: 64,
+    y: 64,
+    width: 1792,
+    height: 952,
+  });
+  assert.deepEqual(computeOcrCropRect(1280, 720, 1920, 1080), {
+    x: 43,
+    y: 43,
+    width: 1194,
+    height: 634,
+  });
+  assert.deepEqual(computeOcrCropRect(100, 80, 100, 80), {
+    x: 25,
+    y: 20,
+    width: 50,
+    height: 40,
+  });
+});
+
 test("adaptive OCR policy changes only after a sustained signal", () => {
   const policy = new AdaptiveOcrPolicy({ adaptIntervalMs: 0, emaAlpha: 1 });
   policy.record(1400, 0);
   policy.record(1400, 1);
-  assert.equal(policy.pixelBudget, 1_500_000);
+  assert.equal(policy.pixelBudget, 1_650_000);
   policy.record(1400, 2);
-  assert.equal(policy.pixelBudget, 1_275_000);
+  assert.equal(policy.pixelBudget, 1_402_500);
   assert.equal(policy.cooldownMs(), 2100);
 
   policy.record(400, 3);
   policy.record(400, 4);
   policy.record(400, 5);
-  assert.equal(policy.pixelBudget, 1_466_250);
+  assert.equal(policy.pixelBudget, 1_612_875);
   assert.equal(policy.cooldownMs(), 750);
 });
 
@@ -54,15 +76,15 @@ test("adaptive OCR changes are rate-limited and cooldowns stay bounded", () => {
   policy.record(2000, 0);
   policy.record(2000, 1);
   policy.record(2000, 2);
-  assert.equal(policy.pixelBudget, 1_275_000);
+  assert.equal(policy.pixelBudget, 1_402_500);
   assert.equal(policy.cooldownMs(), 3000);
 
   policy.record(2000, 3000);
   policy.record(2000, 4000);
   policy.record(2000, 5000);
-  assert.equal(policy.pixelBudget, 1_275_000);
+  assert.equal(policy.pixelBudget, 1_402_500);
   policy.record(2000, 10_002);
-  assert.equal(policy.pixelBudget, 1_083_750);
+  assert.equal(policy.pixelBudget, 1_192_125);
 
   const fast = new AdaptiveOcrPolicy({ emaAlpha: 1 });
   fast.record(100, 0);
@@ -280,11 +302,12 @@ test("overlay replacement waits for renderable content and confirms empty views"
   );
 });
 
-test("overlay typography preserves giant headings and a readable minimum", () => {
-  assert.equal(computeOverlayFontSize(20, 1), 18);
-  assert.equal(computeOverlayFontSize(40, 2), 18);
+test("overlay typography reduces larger text and preserves a readable minimum", () => {
+  assert.equal(computeOverlayFontSize(20, 1), 16.2);
+  assert.equal(computeOverlayFontSize(40, 2), 16.2);
   assert.equal(computeOverlayFontSize(4, 1), 9);
-  assert.equal(computeOverlayFontSize(200, 1), 180);
+  assert.equal(computeOverlayFontSize(200, 1), 162);
+  assert.equal(computeOverlayFontSize(14 / 0.9, 1), 14);
 });
 
 test("overlay alignment centers only obvious single-line text", () => {
@@ -329,5 +352,5 @@ test("OCR skew stays horizontal without inflating the font to the bounding heigh
   assert.equal(rect.angle, 0);
   assert.ok(Math.abs(rect.width - 200) < 1e-9);
   assert.equal(rect.height, 76);
-  assert.equal(computeOverlayFontSize(rect.boxHeight, 1), 36);
+  assert.equal(computeOverlayFontSize(rect.boxHeight, 1), 32.4);
 });

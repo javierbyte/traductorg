@@ -77,7 +77,7 @@ export class TranslationSession {
     this.workerReady = false;
     this.workerModel = null;
     this.workerInitGeneration = 0;
-    this.pixelBudget = 1_500_000;
+    this.pixelBudget = 1_650_000;
     this.ocrAverageMs = 900;
     this.ocrCooldownMs = 1350;
 
@@ -660,6 +660,7 @@ export class TranslationSession {
           type: "ocr",
           sessionId: generation,
           frameId,
+          displayWidth: this.displayWidth,
           displayHeight: this.displayHeight,
           captureScrollBase,
           bitmap,

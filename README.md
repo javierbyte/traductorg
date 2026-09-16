@@ -84,7 +84,8 @@ Keep the local server running. The app has no service worker.
    readable while you scroll.
 4. **Recognize text.** PaddleOCR, using RapidOCR models and ONNX Runtime WASM,
    runs in a worker. It processes one frame at a time and adjusts the frame
-   size between 1 and 2 megapixels based on processing time.
+   size between 1.1 and 2.2 megapixels based on processing time. A 64px border
+   is excluded to avoid spending recognition work on page chrome.
 5. **Group lines.** Lines are combined into paragraphs by position and text
    color before translation.
 6. **Translate.** Paragraphs go to Chrome's `Translator` API. New text replaces

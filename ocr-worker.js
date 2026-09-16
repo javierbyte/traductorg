@@ -16,6 +16,7 @@ import {
   MOTION_DEFAULTS,
   buildAdaptiveParagraphs,
   buildScrollFeatureMap,
+  computeOcrCropRect,
   displayPixelsToSampleRows,
   estimateVerticalShift,
   fingerprintImageData,
@@ -33,6 +34,7 @@ import { fetchVerifiedAsset, resolveLocalAssetUrl } from "./local-assets.js";
 // error objects with the same session/frame identity as their request.
 
 const SCROLL_TOP_EXCLUSION_PX = 80;
+const OCR_BORDER_CROP_PX = 64;
 
 const MODEL_CONFIG = Object.freeze({
   latin: {
@@ -151,6 +153,38 @@ function bitmapToImageData(bitmap, kind) {
   context.drawImage(bitmap, 0, 0);
   bitmap.close();
   return context.getImageData(0, 0, canvas.width, canvas.height);
+}
+
+function bitmapToCroppedOcrImageData(bitmap, displayWidth, displayHeight) {
+  const frameWidth = bitmap.width;
+  const frameHeight = bitmap.height;
+  const crop = computeOcrCropRect(
+    frameWidth,
+    frameHeight,
+    displayWidth,
+    displayHeight,
+    OCR_BORDER_CROP_PX,
+  );
+  const [canvas, context] = ensureCanvas("ocr", crop.width, crop.height);
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(
+    bitmap,
+    crop.x,
+    crop.y,
+    crop.width,
+    crop.height,
+    0,
+    0,
+    crop.width,
+    crop.height,
+  );
+  bitmap.close();
+  return {
+    image: context.getImageData(0, 0, canvas.width, canvas.height),
+    crop,
+    frameWidth,
+    frameHeight,
+  };
 }
 
 async function handleInit(message) {
@@ -295,11 +329,16 @@ async function handleOcr(message) {
       return;
     }
 
-    const image = bitmapToImageData(message.bitmap, "ocr");
+    const { image, crop, frameWidth, frameHeight } =
+      bitmapToCroppedOcrImageData(
+        message.bitmap,
+        message.displayWidth,
+        message.displayHeight,
+      );
     const detected = await activeEngine.det(image);
     const selected = selectReadableBoxes(
       detected,
-      image.height,
+      frameHeight,
       message.displayHeight,
       6,
       120,
@@ -343,14 +382,18 @@ async function handleOcr(message) {
 
     const completeLines = lines.filter(Boolean);
     const layout = Paddle.analyzeLayout(completeLines);
-    const items = buildAdaptiveParagraphs(completeLines, layout).map((item) => ({
-      text: item.text,
-      mean: item.mean,
-      box: item.box,
-      style: item.style,
-      lineCount: item.lineCount,
-      id: stableItemKey(item),
-    }));
+    const items = buildAdaptiveParagraphs(completeLines, layout).map((item) => {
+      const box = item.box.map(([x, y]) => [x + crop.x, y + crop.y]);
+      const mapped = { ...item, box };
+      return {
+        text: item.text,
+        mean: item.mean,
+        box,
+        style: item.style,
+        lineCount: item.lineCount,
+        id: stableItemKey(mapped),
+      };
+    });
     const durationMs = performance.now() - startedAt;
     const nextPolicy = policy.record(durationMs);
     if (sampleAtCapture) lastOcrSample = sampleAtCapture;
@@ -360,8 +403,8 @@ async function handleOcr(message) {
       sessionId: message.sessionId,
       frameId: message.frameId,
       captureScrollBase: message.captureScrollBase,
-      width: image.width,
-      height: image.height,
+      width: frameWidth,
+      height: frameHeight,
       durationMs,
       policy: nextPolicy,
       items,
