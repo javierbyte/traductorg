@@ -34,23 +34,23 @@ test("OCR dimensions preserve aspect ratio and obey the pixel ceiling", () => {
   });
 });
 
-test("OCR crop excludes a 64px display border while retaining full-frame coordinates", () => {
+test("OCR crop excludes a 16px side and 64px top/bottom display border while retaining full-frame coordinates", () => {
   assert.deepEqual(computeOcrCropRect(1920, 1080, 1920, 1080), {
-    x: 64,
+    x: 16,
     y: 64,
-    width: 1792,
+    width: 1888,
     height: 952,
   });
   assert.deepEqual(computeOcrCropRect(1280, 720, 1920, 1080), {
-    x: 43,
+    x: 11,
     y: 43,
-    width: 1194,
+    width: 1258,
     height: 634,
   });
-  assert.deepEqual(computeOcrCropRect(100, 80, 100, 80), {
-    x: 25,
+  assert.deepEqual(computeOcrCropRect(60, 80, 60, 80), {
+    x: 15,
     y: 20,
-    width: 50,
+    width: 30,
     height: 40,
   });
 });

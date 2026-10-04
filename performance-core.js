@@ -59,16 +59,23 @@ export function computeOcrCropRect(
   imageHeight,
   displayWidth,
   displayHeight,
-  insetCssPixels = 64,
+  horizontalInsetCssPixels = 16,
+  verticalInsetCssPixels = 64,
 ) {
   const width = Math.max(1, Math.round(imageWidth) || 1);
   const height = Math.max(1, Math.round(imageHeight) || 1);
-  if (!(displayWidth > 0) || !(displayHeight > 0) || !(insetCssPixels > 0)) {
+  if (!(displayWidth > 0) || !(displayHeight > 0)) {
     return { x: 0, y: 0, width, height };
   }
 
-  const horizontalInset = Math.min(insetCssPixels, displayWidth / 4);
-  const verticalInset = Math.min(insetCssPixels, displayHeight / 4);
+  const horizontalInset =
+    horizontalInsetCssPixels > 0
+      ? Math.min(horizontalInsetCssPixels, displayWidth / 4)
+      : 0;
+  const verticalInset =
+    verticalInsetCssPixels > 0
+      ? Math.min(verticalInsetCssPixels, displayHeight / 4)
+      : 0;
   const x = Math.round((horizontalInset / displayWidth) * width);
   const y = Math.round((verticalInset / displayHeight) * height);
   return { x, y, width: width - x * 2, height: height - y * 2 };

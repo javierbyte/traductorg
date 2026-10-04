@@ -34,7 +34,8 @@ import { fetchVerifiedAsset, resolveLocalAssetUrl } from "./local-assets.js";
 // error objects with the same session/frame identity as their request.
 
 const SCROLL_TOP_EXCLUSION_PX = 80;
-const OCR_BORDER_CROP_PX = 64;
+const OCR_SIDE_CROP_PX = 16;
+const OCR_TOP_BOTTOM_CROP_PX = 64;
 
 const MODEL_CONFIG = Object.freeze({
   latin: {
@@ -163,7 +164,8 @@ function bitmapToCroppedOcrImageData(bitmap, displayWidth, displayHeight) {
     frameHeight,
     displayWidth,
     displayHeight,
-    OCR_BORDER_CROP_PX,
+    OCR_SIDE_CROP_PX,
+    OCR_TOP_BOTTOM_CROP_PX,
   );
   const [canvas, context] = ensureCanvas("ocr", crop.width, crop.height);
   context.clearRect(0, 0, canvas.width, canvas.height);
