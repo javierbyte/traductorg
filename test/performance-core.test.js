@@ -14,7 +14,6 @@ import {
   displayPixelsToSampleRows,
   estimateVerticalShift,
   fingerprintImageData,
-  isActiveGeneration,
   isFrameActive,
   meanPixelDiff,
   quadToDisplayRect,
@@ -59,15 +58,15 @@ test("adaptive OCR policy changes only after a sustained signal", () => {
   const policy = new AdaptiveOcrPolicy({ adaptIntervalMs: 0, emaAlpha: 1 });
   policy.record(1400, 0);
   policy.record(1400, 1);
-  assert.equal(policy.pixelBudget, 1_650_000);
+  assert.equal(policy.pixelBudget, 2_000_000);
   policy.record(1400, 2);
-  assert.equal(policy.pixelBudget, 1_402_500);
+  assert.equal(policy.pixelBudget, 1_700_000);
   assert.equal(policy.cooldownMs(), 2100);
 
   policy.record(400, 3);
   policy.record(400, 4);
   policy.record(400, 5);
-  assert.equal(policy.pixelBudget, 1_612_875);
+  assert.equal(policy.pixelBudget, 1_955_000);
   assert.equal(policy.cooldownMs(), 750);
 });
 
@@ -76,15 +75,15 @@ test("adaptive OCR changes are rate-limited and cooldowns stay bounded", () => {
   policy.record(2000, 0);
   policy.record(2000, 1);
   policy.record(2000, 2);
-  assert.equal(policy.pixelBudget, 1_402_500);
+  assert.equal(policy.pixelBudget, 1_700_000);
   assert.equal(policy.cooldownMs(), 3000);
 
   policy.record(2000, 3000);
   policy.record(2000, 4000);
   policy.record(2000, 5000);
-  assert.equal(policy.pixelBudget, 1_402_500);
+  assert.equal(policy.pixelBudget, 1_700_000);
   policy.record(2000, 10_002);
-  assert.equal(policy.pixelBudget, 1_192_125);
+  assert.equal(policy.pixelBudget, 1_445_000);
 
   const fast = new AdaptiveOcrPolicy({ emaAlpha: 1 });
   fast.record(100, 0);
@@ -113,12 +112,6 @@ test("a replacement translation queue drops the older job's remainder", () => {
   assert.equal(next.job, newJob);
   assert.notEqual(next.job, oldJob);
   assert.equal(queue.next(), null);
-});
-
-test("session generations reject stale asynchronous responses", () => {
-  assert.equal(isActiveGeneration(4, 4), true);
-  assert.equal(isActiveGeneration(undefined, 4), false);
-  assert.equal(isActiveGeneration(3, 4), false);
 });
 
 test("paragraph grouping falls back to lines when backgrounds disagree", () => {

@@ -8,7 +8,11 @@ export default defineConfig({
   reporter: "line",
   use: {
     baseURL: "http://127.0.0.1:4173",
-    channel: "chrome",
+    // Tests target Chrome; PLAYWRIGHT_EXECUTABLE_PATH points at another
+    // Chromium build instead, for example on a CI machine without Chrome.
+    ...(process.env.PLAYWRIGHT_EXECUTABLE_PATH
+      ? { launchOptions: { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH } }
+      : { channel: "chrome" }),
     headless: true,
   },
   webServer: {

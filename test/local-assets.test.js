@@ -13,7 +13,7 @@ const HELLO_HASH = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b
 test("local OCR assets resolve only to the current origin", () => {
   const url = resolveLocalAssetUrl("detector", "https://local.test/app?mode=test");
   assert.equal(url.origin, "https://local.test");
-  assert.equal(url.pathname, "/ocr-assets/ppocr-det.onnx");
+  assert.equal(url.pathname, "/ocr-assets/ppocrv6-det-tiny.onnx");
   assert.throws(
     () => resolveLocalAssetUrl("missing", "https://local.test/"),
     /Unlisted OCR asset/,

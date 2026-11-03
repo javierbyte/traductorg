@@ -1,6 +1,4 @@
 const result = document.getElementById("result");
-const modelId =
-  new URLSearchParams(location.search).get("model") === "zh" ? "zh" : "latin";
 const worker = new Worker(new URL("../ocr-worker.js", import.meta.url), {
   type: "module",
 });
@@ -10,11 +8,9 @@ context.fillStyle = "white";
 context.fillRect(0, 0, canvas.width, canvas.height);
 context.fillStyle = "black";
 context.font = "52px sans-serif";
-context.fillText(
-  modelId === "zh" ? "翻译性能测试" : "Translation café performance test",
-  90,
-  180,
-);
+// One model reads both scripts, so the smoke test shows both at once.
+context.fillText("Translation café performance test", 90, 180);
+context.fillText("翻译性能测试", 90, 320);
 let phase = "init";
 const timeout = setTimeout(() => {
   result.textContent = `FAIL: worker ${phase} timed out`;
@@ -50,6 +46,7 @@ async function sendOcr() {
       type: "ocr",
       sessionId: 1,
       frameId: 2,
+      displayWidth: 1280,
       displayHeight: 720,
       captureScrollBase: 0,
       bitmap,
@@ -62,14 +59,18 @@ worker.addEventListener("message", (event) => {
   const message = event.data;
   if (message.type === "status") result.textContent = message.message;
   if (message.type === "ready") {
-    result.textContent = `${message.modelId} OCR ready with ${message.threads} thread(s)`;
+    result.textContent = `OCR ready with ${message.threads} thread(s)`;
     void sendSample();
   }
   if (message.type === "motion" && phase === "sample") void sendOcr();
   if (message.type === "ocr-result") {
     clearTimeout(timeout);
-    result.textContent = `PASS: ${modelId} full OCR path, ${message.counts.selected} readable region(s), ${Math.round(message.durationMs)} ms`;
-    document.documentElement.dataset.result = "pass";
+    const texts = message.items.map((item) => item.text);
+    const passed =
+      texts.some((text) => /performance test/i.test(text)) &&
+      texts.some((text) => text.includes("性能测试"));
+    result.textContent = `${passed ? "PASS" : "FAIL"}: full OCR path, ${message.counts.selected} readable region(s), ${Math.round(message.durationMs)} ms, read ${JSON.stringify(texts)}`;
+    document.documentElement.dataset.result = passed ? "pass" : "fail";
     worker.terminate();
   }
   if (message.type === "error") {
@@ -84,4 +85,4 @@ worker.addEventListener("error", (event) => {
   result.textContent = `FAIL: ${event.message}`;
   document.documentElement.dataset.result = "fail";
 });
-worker.postMessage({ type: "init", sessionId: 1, frameId: 0, modelId });
+worker.postMessage({ type: "init", sessionId: 1, frameId: 0 });

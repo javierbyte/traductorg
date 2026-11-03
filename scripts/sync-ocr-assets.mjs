@@ -8,26 +8,23 @@ import { OCR_ASSET_MANIFEST } from "../asset-manifest.js";
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const OUTPUT_ROOT = join(ROOT, "public");
 
+// The OCR models are the ONNX exports RapidOCR publishes for PP-OCRv6; the
+// release tag and the SHA-256 in the manifest pin the exact files.
+const RAPIDOCR_RELEASE =
+  "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0";
+
 const SOURCES = Object.freeze({
   ortWasm: {
     packagePath: "node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm",
   },
   detector: {
-    packagePath: "node_modules/paddleocr-browser/dist/ppocr_det.onnx",
+    remoteUrl: `${RAPIDOCR_RELEASE}/onnx/PP-OCRv6/det/PP-OCRv6_det_tiny.onnx`,
   },
-  chineseRecognition: {
-    packagePath: "node_modules/paddleocr-browser/dist/ppocr_rec.onnx",
+  recognizer: {
+    remoteUrl: `${RAPIDOCR_RELEASE}/onnx/PP-OCRv6/rec/PP-OCRv6_rec_tiny.onnx`,
   },
-  chineseDictionary: {
-    packagePath: "node_modules/paddleocr-browser/dist/ppocr_keys_v1.txt",
-  },
-  latinRecognition: {
-    remoteUrl:
-      "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/rec/latin_PP-OCRv5_rec_mobile.onnx",
-  },
-  latinDictionary: {
-    remoteUrl:
-      "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/paddle/PP-OCRv5/rec/latin_PP-OCRv5_rec_mobile/ppocrv5_latin_dict.txt",
+  dictionary: {
+    remoteUrl: `${RAPIDOCR_RELEASE}/paddle/PP-OCRv6/rec/PP-OCRv6_rec_tiny/ppocrv6_tiny_dict.txt`,
   },
 });
 

@@ -7,9 +7,10 @@
 // without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
 // PARTICULAR PURPOSE. See the LICENSE file distributed with this source.
 
-import * as Paddle from "esearch-ocr";
+import { analyzeLayout } from "esearch-ocr";
 import * as ort from "onnxruntime-web/wasm";
 
+import { createOcrEngine } from "./ocr-engine.js";
 import {
   AdaptiveOcrPolicy,
   LruCache,
@@ -17,10 +18,10 @@ import {
   buildAdaptiveParagraphs,
   buildScrollFeatureMap,
   computeOcrCropRect,
+  computeOcrDimensions,
   displayPixelsToSampleRows,
   estimateVerticalShift,
   fingerprintImageData,
-  isActiveGeneration,
   isFrameActive,
   meanPixelDiff,
   selectReadableBoxes,
@@ -36,19 +37,10 @@ import { fetchVerifiedAsset, resolveLocalAssetUrl } from "./local-assets.js";
 const SCROLL_TOP_EXCLUSION_PX = 80;
 const OCR_SIDE_CROP_PX = 16;
 const OCR_TOP_BOTTOM_CROP_PX = 64;
-
-const MODEL_CONFIG = Object.freeze({
-  latin: {
-    recognition: "latinRecognition",
-    dictionary: "latinDictionary",
-    optimizeSpaces: false,
-  },
-  zh: {
-    recognition: "chineseRecognition",
-    dictionary: "chineseDictionary",
-    optimizeSpaces: false,
-  },
-});
+const MIN_LINE_CSS_HEIGHT = 6;
+const MAX_LINES = 120;
+// Lines the recognizer is unsure about are dropped before translation.
+const TEXT_SCORE_MIN = 0.5;
 
 ort.env.wasm.wasmPaths = { wasm: resolveLocalAssetUrl("ortWasm").href };
 ort.env.wasm.proxy = false;
@@ -58,14 +50,15 @@ ort.env.wasm.numThreads = Math.min(
 );
 
 let activeSessionId = 0;
-let modelId = null;
 let engine = null;
 let enginePromise = null;
 let ocrBusy = false;
 let sampleCanvas = null;
 let sampleContext = null;
-let ocrCanvas = null;
-let ocrContext = null;
+let frameCanvas = null;
+let frameContext = null;
+let detectionCanvas = null;
+let detectionContext = null;
 let previousSample = null;
 let previousFeatures = null;
 let latestSample = null;
@@ -86,77 +79,52 @@ function describeError(error) {
   };
 }
 
-async function loadRecognitionAssets(selectedModel) {
-  const config = MODEL_CONFIG[selectedModel];
-  if (!config) throw new Error(`Unknown OCR model: ${selectedModel}`);
-
-  const [input, dictionary] = await Promise.all([
-    fetchVerifiedAsset(config.recognition),
-    fetchVerifiedAsset(config.dictionary),
-  ]);
-  return {
-    input,
-    dictionary,
-    optimizeSpaces: config.optimizeSpaces,
-  };
-}
-
-async function initializeEngine(selectedModel) {
-  const [detector, recognition] = await Promise.all([
+async function initializeEngine() {
+  const [detector, recognizer, dictionary] = await Promise.all([
     fetchVerifiedAsset("detector"),
-    loadRecognitionAssets(selectedModel),
+    fetchVerifiedAsset("recognizer"),
+    fetchVerifiedAsset("dictionary"),
   ]);
-
   send("status", {
     sessionId: activeSessionId,
     frameId: 0,
     message: "Initializing OCR...",
   });
-  const instance = await Paddle.init({
-    det: { input: detector },
-    rec: {
-      input: recognition.input,
-      decodeDic: recognition.dictionary,
-      optimize: { space: recognition.optimizeSpaces },
-    },
+  return createOcrEngine({
     ort,
-    ortOption: {
+    detector,
+    recognizer,
+    dictionary,
+    sessionOptions: {
       graphOptimizationLevel: "all",
       executionMode: "sequential",
     },
   });
-  return instance;
 }
 
-function ensureCanvas(kind, width, height) {
-  if (kind === "sample") {
-    if (!sampleCanvas) {
-      sampleCanvas = new OffscreenCanvas(width, height);
-      sampleContext = sampleCanvas.getContext("2d", { willReadFrequently: true });
-    }
-    if (sampleCanvas.width !== width) sampleCanvas.width = width;
-    if (sampleCanvas.height !== height) sampleCanvas.height = height;
-    return [sampleCanvas, sampleContext];
+function ensureCanvas(canvas, context, width, height) {
+  if (!canvas) {
+    canvas = new OffscreenCanvas(width, height);
+    context = canvas.getContext("2d", { willReadFrequently: true });
+  } else if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
   }
-
-  if (!ocrCanvas) {
-    ocrCanvas = new OffscreenCanvas(width, height);
-    ocrContext = ocrCanvas.getContext("2d", { willReadFrequently: true });
-  }
-  if (ocrCanvas.width !== width) ocrCanvas.width = width;
-  if (ocrCanvas.height !== height) ocrCanvas.height = height;
-  return [ocrCanvas, ocrContext];
+  return [canvas, context];
 }
 
-function bitmapToImageData(bitmap, kind) {
-  const [canvas, context] = ensureCanvas(kind, bitmap.width, bitmap.height);
-  context.clearRect(0, 0, canvas.width, canvas.height);
-  context.drawImage(bitmap, 0, 0);
+function bitmapToSampleImageData(bitmap) {
+  const { width, height } = bitmap;
+  [sampleCanvas, sampleContext] = ensureCanvas(sampleCanvas, sampleContext, width, height);
+  sampleContext.drawImage(bitmap, 0, 0);
   bitmap.close();
-  return context.getImageData(0, 0, canvas.width, canvas.height);
+  return sampleContext.getImageData(0, 0, width, height);
 }
 
-function bitmapToCroppedOcrImageData(bitmap, displayWidth, displayHeight) {
+// Text is detected on a size-limited copy of the frame, but each line is cut
+// for recognition from the full-resolution capture, so small text on dense
+// displays stays legible to the recognizer.
+function prepareOcrImages(bitmap, displayWidth, displayHeight) {
   const frameWidth = bitmap.width;
   const frameHeight = bitmap.height;
   const crop = computeOcrCropRect(
@@ -167,25 +135,28 @@ function bitmapToCroppedOcrImageData(bitmap, displayWidth, displayHeight) {
     OCR_SIDE_CROP_PX,
     OCR_TOP_BOTTOM_CROP_PX,
   );
-  const [canvas, context] = ensureCanvas("ocr", crop.width, crop.height);
-  context.clearRect(0, 0, canvas.width, canvas.height);
-  context.drawImage(
-    bitmap,
-    crop.x,
-    crop.y,
-    crop.width,
-    crop.height,
-    0,
-    0,
-    crop.width,
-    crop.height,
+  const detection = computeOcrDimensions(crop.width, crop.height, policy.pixelBudget);
+
+  [frameCanvas, frameContext] = ensureCanvas(frameCanvas, frameContext, crop.width, crop.height);
+  frameContext.drawImage(bitmap, crop.x, crop.y, crop.width, crop.height, 0, 0, crop.width, crop.height);
+
+  [detectionCanvas, detectionContext] = ensureCanvas(
+    detectionCanvas,
+    detectionContext,
+    detection.width,
+    detection.height,
   );
+  detectionContext.imageSmoothingEnabled = true;
+  detectionContext.imageSmoothingQuality = "high";
+  detectionContext.drawImage(frameCanvas, 0, 0, detection.width, detection.height);
   bitmap.close();
+
   return {
-    image: context.getImageData(0, 0, canvas.width, canvas.height),
     crop,
     frameWidth,
     frameHeight,
+    frame: frameContext.getImageData(0, 0, crop.width, crop.height),
+    detection: detectionContext.getImageData(0, 0, detection.width, detection.height),
   };
 }
 
@@ -196,11 +167,10 @@ async function handleInit(message) {
   latestSample = null;
   lastOcrSample = null;
 
-  if (engine && modelId === message.modelId) {
+  if (engine) {
     send("ready", {
       sessionId: activeSessionId,
       frameId: 0,
-      modelId,
       threads: ort.env.wasm.numThreads,
       policy: policy.snapshot(),
     });
@@ -208,14 +178,13 @@ async function handleInit(message) {
   }
 
   if (!enginePromise) {
-    modelId = message.modelId;
     recognitionCache.clear();
     send("status", {
       sessionId: activeSessionId,
       frameId: 0,
       message: "Loading OCR models...",
     });
-    enginePromise = initializeEngine(modelId);
+    enginePromise = initializeEngine();
   }
 
   const pendingEngine = enginePromise;
@@ -225,17 +194,10 @@ async function handleInit(message) {
       engine = initializedEngine;
       enginePromise = null;
     }
-    if (
-      !engine ||
-      message.modelId !== modelId ||
-      message.sessionId !== activeSessionId
-    ) {
-      return;
-    }
+    if (!engine || message.sessionId !== activeSessionId) return;
     send("ready", {
       sessionId: activeSessionId,
       frameId: 0,
-      modelId,
       threads: ort.env.wasm.numThreads,
       policy: policy.snapshot(),
     });
@@ -263,12 +225,12 @@ function handleReset(message) {
 }
 
 function handleSample(message) {
-  if (!isActiveGeneration(message.sessionId, activeSessionId)) {
+  if (message.sessionId !== activeSessionId) {
     message.bitmap.close();
     return;
   }
 
-  const image = bitmapToImageData(message.bitmap, "sample");
+  const image = bitmapToSampleImageData(message.bitmap);
   const excludedRows = displayPixelsToSampleRows(
     SCROLL_TOP_EXCLUSION_PX,
     image.height,
@@ -290,24 +252,18 @@ function handleSample(message) {
     data: new Uint8ClampedArray(image.data),
   };
 
-  const changed = !lastOcrSample || ocrDelta > MOTION_DEFAULTS.diffThreshold;
-  const active = isFrameActive(frameDelta);
   send("motion", {
     sessionId: message.sessionId,
     frameId: message.frameId,
-    changed,
-    active,
-    frameDelta: Number.isFinite(frameDelta) ? frameDelta : 0,
-    ocrDelta: Number.isFinite(ocrDelta) ? ocrDelta : Infinity,
+    changed: !lastOcrSample || ocrDelta > MOTION_DEFAULTS.diffThreshold,
+    active: isFrameActive(frameDelta),
     moved: shift.moved,
     dy: shift.dy,
-    confidence: shift.confidence,
-    uniqueness: shift.uniqueness,
   });
 }
 
 async function handleOcr(message) {
-  if (!isActiveGeneration(message.sessionId, activeSessionId)) {
+  if (message.sessionId !== activeSessionId) {
     message.bitmap.close();
     return;
   }
@@ -331,20 +287,25 @@ async function handleOcr(message) {
       return;
     }
 
-    const { image, crop, frameWidth, frameHeight } =
-      bitmapToCroppedOcrImageData(
-        message.bitmap,
-        message.displayWidth,
-        message.displayHeight,
-      );
-    const detected = await activeEngine.det(image);
-    const selected = selectReadableBoxes(
-      detected,
-      frameHeight,
+    const { crop, frameWidth, frameHeight, frame, detection } = prepareOcrImages(
+      message.bitmap,
+      message.displayWidth,
       message.displayHeight,
-      6,
-      120,
     );
+    const detected = await activeEngine.det(detection);
+    const scaleX = frame.width / detection.width;
+    const scaleY = frame.height / detection.height;
+    const readable = selectReadableBoxes(
+      detected.map((entry) => ({
+        ...entry,
+        box: entry.box.map(([x, y]) => [x * scaleX, y * scaleY]),
+      })),
+      frame.height,
+      message.displayHeight,
+      MIN_LINE_CSS_HEIGHT,
+      MAX_LINES,
+    );
+    const selected = activeEngine.prepareLines(frame, readable);
 
     const lines = new Array(selected.length);
     const missing = [];
@@ -352,19 +313,14 @@ async function handleOcr(message) {
     let reused = 0;
 
     for (let index = 0; index < selected.length; index++) {
-      const box = selected[index];
-      const cacheKey = `${modelId}:${fingerprintImageData(box.img)}`;
+      const line = selected[index];
+      const cacheKey = fingerprintImageData(line.img);
       const cached = recognitionCache.get(cacheKey);
       if (cached) {
-        lines[index] = {
-          text: cached.text,
-          mean: cached.mean,
-          box: box.box,
-          style: box.style,
-        };
+        lines[index] = { ...cached, box: line.box, style: line.style };
         reused++;
       } else {
-        missing.push(box);
+        missing.push(line);
         missingIndexes.push({ index, cacheKey });
       }
     }
@@ -373,27 +329,23 @@ async function handleOcr(message) {
       const recognized = await activeEngine.rec(missing);
       for (let i = 0; i < recognized.length; i++) {
         const target = missingIndexes[i];
-        const line = recognized[i];
-        lines[target.index] = line;
-        recognitionCache.set(target.cacheKey, {
-          text: line.text,
-          mean: line.mean,
-        });
+        const { text, mean } = recognized[i];
+        lines[target.index] = recognized[i];
+        recognitionCache.set(target.cacheKey, { text, mean });
       }
     }
 
-    const completeLines = lines.filter(Boolean);
-    const layout = Paddle.analyzeLayout(completeLines);
-    const items = buildAdaptiveParagraphs(completeLines, layout).map((item) => {
+    const confidentLines = lines.filter((line) => line && line.mean >= TEXT_SCORE_MIN);
+    const layout = analyzeLayout(confidentLines);
+    const items = buildAdaptiveParagraphs(confidentLines, layout).map((item) => {
       const box = item.box.map(([x, y]) => [x + crop.x, y + crop.y]);
-      const mapped = { ...item, box };
       return {
         text: item.text,
         mean: item.mean,
         box,
         style: item.style,
         lineCount: item.lineCount,
-        id: stableItemKey(mapped),
+        id: stableItemKey({ ...item, box }),
       };
     });
     const durationMs = performance.now() - startedAt;

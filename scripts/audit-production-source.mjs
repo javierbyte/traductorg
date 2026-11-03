@@ -9,6 +9,7 @@ const PRODUCTION_FILES = [
   "examples.js",
   "ocr.js",
   "ocr-worker.js",
+  "ocr-engine.js",
   "performance-core.js",
   "local-assets.js",
   "asset-manifest.js",
