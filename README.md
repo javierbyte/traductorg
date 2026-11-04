@@ -12,8 +12,8 @@ Built by [Javier](https://javier.xyz). Find me on
 ## Getting started
 
 Open [traduct.org](https://traduct.org) in Chrome on desktop, choose your languages, and share a window
-or screen. Chrome downloads the translation models the first time you use a
-language pair.
+or screen. The page fetches its two OCR models (about 6 MB) once, and Chrome
+downloads the translation models the first time you use a language pair.
 
 Supported languages: German, English, Spanish, French, Italian, Portuguese,
 Dutch, and Chinese.
@@ -82,11 +82,16 @@ Keep the local server running. The app has no service worker.
    per second. It detects changes and estimates how far the page scrolled.
 3. **Track scrolling.** Existing translations move with the page so they stay
    readable while you scroll.
-4. **Recognize text.** PaddleOCR, using RapidOCR models and ONNX Runtime WASM,
-   runs in a worker. It processes one frame at a time and adjusts the frame
-   size between 1.1 and 2.2 megapixels based on processing time. A 16px side
-   border and a 64px top and bottom border are excluded to avoid spending
-   recognition work on page chrome.
+4. **Recognize text.** PP-OCRv6 "tiny" detection and recognition models
+   (PaddleOCR, ONNX export from RapidOCR) run on ONNX Runtime WASM in a
+   worker, driven by the small pipeline in [ocr-engine.js](ocr-engine.js).
+   One model pair covers every offered language. Text is detected on a copy of
+   the frame whose size adapts between 1.1 and 3 megapixels based on
+   processing time, but each line is cut for recognition from the full
+   capture, so small text on high-density displays stays legible. Lines are
+   recognized in width-sorted batches, and lines whose pixels have not changed
+   reuse their previous text. A 16px side border and a 64px top and bottom
+   border are excluded to avoid spending recognition work on page chrome.
 5. **Group lines.** Lines are combined into paragraphs by position and text
    color before translation.
 6. **Translate.** Paragraphs go to Chrome's `Translator` API. New text replaces
@@ -97,6 +102,10 @@ Keep the local server running. The app has no service worker.
 Recognition runs in a worker to keep the interface responsive. The video
 plays directly without being copied through a canvas. OCR currently uses
 WASM; WebGPU is disabled.
+
+`node scripts/bench-ocr.mjs` benchmarks the OCR engine and model variants in
+headless Chromium against the pages in `fixtures/performance.html`, reporting
+timings together with line recall and character error rate.
 
 ## License
 

@@ -8,9 +8,9 @@
 // PARTICULAR PURPOSE. See the LICENSE file distributed with this source.
 
 const OCR_POLICY_DEFAULTS = Object.freeze({
-  initialPixels: 1_650_000,
+  initialPixels: 2_000_000,
   minPixels: 1_100_000,
-  maxPixels: 2_200_000,
+  maxPixels: 3_000_000,
   targetMs: 900,
   lowerMs: 650,
   upperMs: 1200,
@@ -168,10 +168,6 @@ export class LruCache {
     return this.map.size;
   }
 
-  has(key) {
-    return this.map.has(key);
-  }
-
   get(key) {
     if (!this.map.has(key)) return undefined;
     const value = this.map.get(key);
@@ -204,7 +200,6 @@ export class SupersedingQueue {
       ...metadata,
       entries: [...entries],
       index: 0,
-      attempted: new Set(),
     };
     return this.current;
   }
@@ -213,14 +208,11 @@ export class SupersedingQueue {
     this.current = null;
   }
 
-  next(shouldSkip = () => false) {
+  next() {
     const job = this.current;
     if (!job) return null;
-    while (job.index < job.entries.length) {
-      const entry = job.entries[job.index++];
-      if (job.attempted.has(entry) || shouldSkip(entry, job)) continue;
-      job.attempted.add(entry);
-      return { job, entry };
+    if (job.index < job.entries.length) {
+      return { job, entry: job.entries[job.index++] };
     }
     if (this.current === job) this.current = null;
     return null;
@@ -268,10 +260,6 @@ export class OverlayReplacementPolicy {
   finish(batch) {
     if (this.pending === batch) this.pending = null;
   }
-}
-
-export function isActiveGeneration(messageSessionId, activeSessionId) {
-  return messageSessionId === activeSessionId;
 }
 
 export function normalizeText(text) {

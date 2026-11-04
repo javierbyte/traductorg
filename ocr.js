@@ -12,9 +12,7 @@ import {
   OverlayReplacementPolicy,
   SupersedingQueue,
   computeOverlayFontSize,
-  computeOcrDimensions,
   inferOverlayTextAlign,
-  isActiveGeneration,
   normalizeText,
   quadToDisplayRect,
 } from "./performance-core.js";
@@ -28,9 +26,6 @@ const RESOURCE_GRACE_MS = 60_000;
 const CONFIDENCE_MIN = 0.4;
 const CACHE_MAX = 1000;
 const TEXT_RE = /\p{Letter}{2,}/u;
-function modelForLanguage(language) {
-  return language === "zh" ? "zh" : "latin";
-}
 
 function isReadableText(value) {
   const text = normalizeText(value);
@@ -67,7 +62,6 @@ export class TranslationSession {
 
     this.pairKey = "de>en";
     this.sameLanguage = false;
-    this.modelId = "latin";
     this.generation = 1;
     this.active = false;
     this.prepared = false;
@@ -75,9 +69,8 @@ export class TranslationSession {
 
     this.worker = null;
     this.workerReady = false;
-    this.workerModel = null;
     this.workerInitGeneration = 0;
-    this.pixelBudget = 1_650_000;
+    this.pixelBudget = 2_000_000;
     this.ocrAverageMs = 900;
     this.ocrCooldownMs = 1350;
 
@@ -158,22 +151,13 @@ export class TranslationSession {
 
   setLanguages(sourceLanguage, targetLanguage) {
     const nextPair = `${sourceLanguage}>${targetLanguage}`;
-    const nextModel = modelForLanguage(sourceLanguage);
     const changed = nextPair !== this.pairKey;
 
     this.pairKey = nextPair;
     this.sameLanguage = sourceLanguage === targetLanguage;
-    this.modelId = nextModel;
 
     if (changed) {
-      this.generation++;
-      this.samplePending = false;
-      this.ocrInFlight = false;
-      this.latestMotionFrameId = 0;
-      this.ocrFrameId = 0;
-      this.initialOcrSent = false;
-      this.nextOcrAt = 0;
-      this.translationQueue.clear();
+      this.#invalidatePipeline();
       this.#destroyTranslator();
       this.#clearResults(true);
     }
@@ -199,16 +183,10 @@ export class TranslationSession {
     this.releaseTimer = 0;
     this.active = true;
     this.frameId = 0;
-    this.latestMotionFrameId = 0;
-    this.ocrFrameId = 0;
     this.lastSampleAt = 0;
-    this.samplePending = false;
-    this.ocrInFlight = false;
-    this.initialOcrSent = false;
-    this.hasOcrResult = false;
-    this.nextOcrAt = 0;
     this.changedSince = 0;
-    this.lastActivityAt = 0;
+    this.#invalidatePipeline();
+    this.hasOcrResult = false;
     this.#resetScroll();
 
     if (!this.sameLanguage && this.translatorState !== "unavailable") {
@@ -222,20 +200,10 @@ export class TranslationSession {
     this.ocrPreparation = null;
     if (!this.active && this.releaseTimer) return;
     this.active = false;
-    this.generation++;
     this.#stopFrameLoop();
-    this.samplePending = false;
-    this.ocrInFlight = false;
-    this.ocrFrameId = 0;
-    this.translationQueue.clear();
+    this.#invalidatePipeline();
+    this.#resetWorker();
     this.#clearResults(true);
-    if (this.worker) {
-      this.worker.postMessage({
-        type: "reset",
-        sessionId: this.generation,
-        frameId: 0,
-      });
-    }
     this.#setStatus("ocr", "");
     this.#setStatus("error", "");
     clearTimeout(this.releaseTimer);
@@ -269,33 +237,41 @@ export class TranslationSession {
     this.#resetScroll();
     this.#scheduleRender();
     if (this.workerReady) {
-      this.generation++;
-      this.samplePending = false;
-      this.ocrInFlight = false;
-      this.latestMotionFrameId = 0;
-      this.ocrFrameId = 0;
-      this.translationQueue.clear();
+      this.#invalidatePipeline();
       this.replacementPolicy.reset();
-      this.worker.postMessage({
-        type: "reset",
-        sessionId: this.generation,
-        frameId: 0,
-      });
-      this.initialOcrSent = false;
+      this.#resetWorker();
       this.hasOcrResult = false;
-      this.nextOcrAt = 0;
     }
+  }
+
+  // Starts a new generation so in-flight samples, OCR passes and translation
+  // jobs from the previous state are ignored when they complete.
+  #invalidatePipeline() {
+    this.generation++;
+    this.samplePending = false;
+    this.ocrInFlight = false;
+    this.latestMotionFrameId = 0;
+    this.ocrFrameId = 0;
+    this.initialOcrSent = false;
+    this.nextOcrAt = 0;
+    this.translationQueue.clear();
+  }
+
+  #resetWorker() {
+    this.worker?.postMessage({
+      type: "reset",
+      sessionId: this.generation,
+      frameId: 0,
+    });
   }
 
   #ensureWorker() {
     if (this.sameLanguage) return;
-    if (this.worker && this.workerModel !== this.modelId) this.#terminateWorker();
 
     if (!this.worker) {
       this.worker = new Worker(new URL("./ocr-worker.js", import.meta.url), {
         type: "module",
       });
-      this.workerModel = this.modelId;
       this.workerReady = false;
       this.workerInitGeneration = 0;
       this.worker.addEventListener("message", (event) => this.#handleWorkerMessage(event));
@@ -314,14 +290,9 @@ export class TranslationSession {
         type: "init",
         sessionId: this.generation,
         frameId: 0,
-        modelId: this.modelId,
       });
     } else if (this.workerReady) {
-      this.worker.postMessage({
-        type: "reset",
-        sessionId: this.generation,
-        frameId: 0,
-      });
+      this.#resetWorker();
     }
   }
 
@@ -337,7 +308,6 @@ export class TranslationSession {
     this.worker.terminate();
     this.worker = null;
     this.workerReady = false;
-    this.workerModel = null;
     this.workerInitGeneration = 0;
   }
 
@@ -497,18 +467,21 @@ export class TranslationSession {
     this.#updateRates(now);
   }
 
-  async #captureBitmap(width, height, resizeQuality) {
+  // Grabs the current video frame, optionally scaled to a small sample.
+  async #captureBitmap(resize) {
     try {
-      return await createImageBitmap(this.video, {
-        resizeWidth: width,
-        resizeHeight: height,
-        resizeQuality,
-      });
+      return await createImageBitmap(this.video, resize ? {
+        resizeWidth: resize.width,
+        resizeHeight: resize.height,
+        resizeQuality: "pixelated",
+      } : undefined);
     } catch (_) {
+      const width = resize?.width || this.video.videoWidth;
+      const height = resize?.height || this.video.videoHeight;
       const canvas = new OffscreenCanvas(width, height);
       const context = canvas.getContext("2d");
       context.imageSmoothingEnabled = true;
-      context.imageSmoothingQuality = resizeQuality === "pixelated" ? "low" : "high";
+      context.imageSmoothingQuality = resize ? "low" : "high";
       context.drawImage(this.video, 0, 0, width, height);
       return canvas.transferToImageBitmap();
     }
@@ -519,11 +492,10 @@ export class TranslationSession {
     const frameId = ++this.frameId;
     this.samplePending = true;
     try {
-      const bitmap = await this.#captureBitmap(
-        SAMPLE_WIDTH,
-        SAMPLE_HEIGHT,
-        "pixelated",
-      );
+      const bitmap = await this.#captureBitmap({
+        width: SAMPLE_WIDTH,
+        height: SAMPLE_HEIGHT,
+      });
       if (!this.active || generation !== this.generation || !this.worker) {
         bitmap.close();
         this.samplePending = false;
@@ -548,9 +520,7 @@ export class TranslationSession {
   #handleWorkerMessage(event) {
     const startedAt = performance.now();
     const message = event.data;
-    if (!isActiveGeneration(message.sessionId, this.generation)) {
-      return;
-    }
+    if (message.sessionId !== this.generation) return;
 
     if (message.type === "status") {
       this.#setStatus("ocr", message.message);
@@ -640,15 +610,12 @@ export class TranslationSession {
     const generation = this.generation;
     const frameId = ++this.frameId;
     const captureScrollBase = this.scrollAccum;
-    const sourceWidth = this.video.videoWidth;
-    const sourceHeight = this.video.videoHeight;
-    const target = computeOcrDimensions(sourceWidth, sourceHeight, this.pixelBudget);
     this.ocrInFlight = true;
     this.ocrFrameId = frameId;
     this.initialOcrSent = true;
 
     try {
-      const bitmap = await this.#captureBitmap(target.width, target.height, "high");
+      const bitmap = await this.#captureBitmap();
       if (!this.active || generation !== this.generation || !this.worker) {
         bitmap.close();
         this.ocrInFlight = false;
@@ -955,23 +922,12 @@ export class TranslationSession {
     if (!this.active) return;
     if (!this.documentVisible) {
       this.#stopFrameLoop();
-      this.generation++;
-      this.samplePending = false;
-      this.ocrInFlight = false;
-      this.latestMotionFrameId = 0;
-      this.ocrFrameId = 0;
-      this.translationQueue.clear();
+      this.#invalidatePipeline();
       this.replacementPolicy.reset();
-      this.worker?.postMessage({
-        type: "reset",
-        sessionId: this.generation,
-        frameId: 0,
-      });
+      this.#resetWorker();
       return;
     }
-    this.initialOcrSent = false;
     this.hasOcrResult = false;
-    this.nextOcrAt = 0;
     if (this.translatorState !== "unavailable") this.#ensureWorker();
     this.#startFrameLoop();
   }

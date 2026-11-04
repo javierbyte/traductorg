@@ -6,3 +6,4 @@ dist/
 public/ocr-assets/
 test-results/
 playwright-report/
+fixtures/bench-models/
