@@ -19,6 +19,7 @@ const intro = document.getElementById("intro");
 const translationSession = new TranslationSession({
   video: videoElement,
   overlay: translateOverlay,
+  onCaptureChange: () => layoutDisplay(),
 });
 
 let isPlaying = false;
@@ -272,10 +273,14 @@ if (!translatorSupported) {
   checkTranslatorAvailability();
 }
 
+// Fits the shared page to the window. A browser window's toolbar (the rows
+// above captureTop) is left out: the video is shifted up and clipped, and the
+// overlay covers exactly what remains.
 function layoutDisplay() {
   const sourceWidth = videoElement.videoWidth;
-  const sourceHeight = videoElement.videoHeight;
-  if (!sourceWidth || !sourceHeight) return;
+  const cutTop = Math.min(translationSession.captureTop, videoElement.videoHeight - 1);
+  const sourceHeight = videoElement.videoHeight - cutTop;
+  if (!sourceWidth || !(sourceHeight > 0)) return;
 
   const scale = Math.min(
     window.innerWidth / sourceWidth,
@@ -285,16 +290,18 @@ function layoutDisplay() {
   const height = Math.round(sourceHeight * scale);
   const left = Math.round((window.innerWidth - width) / 2);
   const top = Math.round((window.innerHeight - height) / 2);
-  const signature = `${left},${top},${width},${height}`;
+  const hidden = cutTop * scale;
+  const signature = `${left},${top},${width},${height},${hidden}`;
   if (signature === lastLayout) return;
   lastLayout = signature;
 
-  for (const element of [videoElement, translateOverlay]) {
-    element.style.left = `${left}px`;
-    element.style.top = `${top}px`;
-    element.style.width = `${width}px`;
-    element.style.height = `${height}px`;
-  }
+  translateOverlay.style.left = videoElement.style.left = `${left}px`;
+  translateOverlay.style.top = `${top}px`;
+  translateOverlay.style.width = videoElement.style.width = `${width}px`;
+  translateOverlay.style.height = `${height}px`;
+  videoElement.style.top = `${top - hidden}px`;
+  videoElement.style.height = `${height + hidden}px`;
+  videoElement.style.clipPath = hidden ? `inset(${hidden}px 0 0 0)` : "";
   translationSession.setDisplaySize(width, height);
 }
 
@@ -333,6 +340,7 @@ async function startSession(stream, preparation) {
     console.warn("The browser could not apply the 30 fps capture cap:", error);
   }
 
+  translationSession.setCaptureSurface(track.getSettings().displaySurface);
   videoElement.srcObject = stream;
   track.addEventListener("ended", stopSession, { once: true });
   await preparation;

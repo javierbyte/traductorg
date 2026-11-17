@@ -11,14 +11,13 @@
     "test": "node --test test/*.test.js",
     "test:privacy": "npm run build && playwright test",
     "check:source": "node scripts/audit-production-source.mjs",
-    "check": "node --check script.js && node --check ocr.js && node --check ocr-worker.js && node --check ocr-engine.js && node --test test/*.test.js && npm run check:source && npm run test:privacy"
+    "check": "node --check script.js && node --check ocr.js && node --check ocr-worker.js && node --check ocr-engine.js && node --check layout.js && node --check window-chrome.js && node --test test/*.test.js && npm run check:source && npm run test:privacy"
   },
   "dependencies": {
-    "esearch-ocr": "8.5.0",
-    "onnxruntime-web": "1.26.0"
+    "onnxruntime-web": "1.31.1"
   },
   "devDependencies": {
-    "@playwright/test": "1.62.1",
-    "vite": "8.2.1"
+    "@playwright/test": "1.65.1",
+    "vite": "8.3.8"
   }
 }

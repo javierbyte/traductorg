@@ -28,9 +28,9 @@ async function init(options) {
     for (const entry of pending.values()) entry.reject(new Error(event.message));
     pending.clear();
   });
-  result.textContent = `Loading ${options.engine}: ${options.det}`;
+  result.textContent = `Loading ${options.det}`;
   await request({ type: "init", ...options });
-  result.textContent = `Ready: ${options.engine}`;
+  result.textContent = `Ready: ${options.det}`;
 }
 
 async function run(bitmap) {

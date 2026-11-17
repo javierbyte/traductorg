@@ -10,6 +10,8 @@ const PRODUCTION_FILES = [
   "ocr.js",
   "ocr-worker.js",
   "ocr-engine.js",
+  "layout.js",
+  "window-chrome.js",
   "performance-core.js",
   "local-assets.js",
   "asset-manifest.js",

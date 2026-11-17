@@ -78,34 +78,51 @@ Keep the local server running. The app has no service worker.
 
 1. **Capture.** The shared stream plays in a `<video>` element with
    `contentHint = "text"`.
-2. **Detect changes.** The OCR worker compares small samples up to 15 times
+2. **Cut the browser's toolbar.** When a browser window is shared, the tab
+   strip and toolbar are found once a second (the first line that crosses the
+   whole window, see [window-chrome.js](window-chrome.js)) and cut off: they
+   are neither shown nor sampled nor read. This covers Chrome and Safari on macOS; when
+   no toolbar edge is found, a 64px top margin is skipped instead. A 16px side
+   margin and a 64px bottom margin are always skipped.
+3. **Detect changes.** The OCR worker compares small samples up to 15 times
    per second. It detects changes and estimates how far the page scrolled.
-3. **Track scrolling.** Existing translations move with the page so they stay
+4. **Track scrolling.** Existing translations move with the page so they stay
    readable while you scroll.
-4. **Recognize text.** PP-OCRv6 "tiny" detection and recognition models
+5. **Recognize text.** PP-OCRv6 "tiny" detection and recognition models
    (PaddleOCR, ONNX export from RapidOCR) run on ONNX Runtime WASM in a
    worker, driven by the small pipeline in [ocr-engine.js](ocr-engine.js).
-   One model pair covers every offered language. Text is detected on a copy of
-   the frame whose size adapts between 1.1 and 3 megapixels based on
-   processing time, but each line is cut for recognition from the full
-   capture, so small text on high-density displays stays legible. Lines are
-   recognized in width-sorted batches, and lines whose pixels have not changed
-   reuse their previous text. A 16px side border and a 64px top and bottom
-   border are excluded to avoid spending recognition work on page chrome.
-5. **Group lines.** Lines are combined into paragraphs by position and text
-   color before translation.
-6. **Translate.** Paragraphs go to Chrome's `Translator` API. New text replaces
+   One model pair covers every offered language. Text is detected on a reduced
+   copy of the frame, sized so the smallest text on screen stays about a dozen
+   pixels tall and capped between 1.1 and 3 megapixels by processing time.
+   Each detected box is then snapped to the pixels of its text in the full
+   capture and cut from there, so small text on high-density displays stays
+   legible, and a line produces the same crop wherever it is on screen. Lines
+   are recognized in width-sorted batches, and a line that was read before is
+   not read again: after a scroll only the lines that came into view are
+   recognized. Lines cut off by the edge of the frame wait until they are
+   fully visible.
+6. **Group lines.** [layout.js](layout.js) joins lines into the paragraphs
+   that are translated, using font size, line spacing, alignment and
+   background. A line that left room for the next word ended its paragraph;
+   list items, table cells and headings stay separate.
+7. **Translate.** Paragraphs go to Chrome's `Translator` API. New text replaces
    stale pending batches, and results are cached for each language pair.
-7. **Display.** The overlay reuses DOM nodes across frames and moves them
+8. **Display.** The overlay reuses DOM nodes across frames and moves them
    together during scrolling.
 
 Recognition runs in a worker to keep the interface responsive. The video
 plays directly without being copied through a canvas. OCR currently uses
 WASM; WebGPU is disabled.
 
-`node scripts/bench-ocr.mjs` benchmarks the OCR engine and model variants in
-headless Chromium against the pages in `fixtures/performance.html`, reporting
-timings together with line recall and character error rate.
+Two benchmarks run in Chrome against pages in `fixtures/`:
+
+- `node scripts/bench-pipeline.mjs` sends an article page through the real
+  worker at 1x and 2x pixel density and at several scroll positions. It
+  reports how many of the page's text blocks reach the translator intact,
+  the character error rate, and the time of a first pass, a repeated pass and
+  a pass after scrolling.
+- `node scripts/bench-ocr.mjs` times the OCR engine alone and compares model
+  variants, with line recall and character error rate.
 
 ## License
 

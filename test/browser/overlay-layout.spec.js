@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test";
 
 test("single-line translations grow without wrapping and retain their alignment", async ({ page }) => {
   // Exercise the session renderer with deterministic OCR results and real browser layout.
-  for (const file of ["ocr.js", "performance-core.js"]) {
+  for (const file of ["ocr.js", "performance-core.js", "window-chrome.js"]) {
     const body = await readFile(new URL(`../../${file}`, import.meta.url), "utf8");
     await page.route(`**/${file}`, (route) => route.fulfill({ contentType: "text/javascript", body }));
   }
@@ -18,9 +18,9 @@ test("single-line translations grow without wrapping and retain their alignment"
     session.resultWidth = 1000;
     session.resultHeight = 600;
     session.results = [
-      { id: "left", text: "Kurz", lineCount: 1, box: [[50, 50], [150, 50], [150, 80], [50, 80]] },
-      { id: "center", text: "Titel", lineCount: 1, box: [[450, 150], [550, 150], [550, 180], [450, 180]] },
-      { id: "paragraph", text: "Absatz", lineCount: 2, box: [[50, 250], [200, 250], [200, 310], [50, 310]] },
+      { id: "left", text: "Kurz", lineCount: 1, fontSize: 24, box: [[50, 50], [150, 50], [150, 80], [50, 80]] },
+      { id: "center", text: "Titel", lineCount: 1, fontSize: 24, box: [[450, 150], [550, 150], [550, 180], [450, 180]] },
+      { id: "paragraph", text: "Absatz", lineCount: 2, fontSize: 24, box: [[50, 250], [200, 250], [200, 310], [50, 310]] },
     ];
     for (const item of session.results) {
       session.translationCache.set(`de>en:${item.text}`, "This translation is much longer than its original source text");

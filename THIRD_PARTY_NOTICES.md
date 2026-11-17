@@ -7,16 +7,7 @@ to traduct.org's original application code.
 
 ## Runtime libraries
 
-### eSearch OCR 8.5.0
-
-- Purpose: layout analysis that groups recognized lines into columns and
-  paragraphs.
-- Source: https://github.com/xushengfeng/eSearch-OCR
-- License: Apache License 2.0.
-- License text: [`licenses/APACHE-2.0.txt`](./licenses/APACHE-2.0.txt).
-- Copyright: eSearch OCR contributors.
-
-### ONNX Runtime Web 1.26.0
+### ONNX Runtime Web 1.31.1
 
 - Purpose: local WebAssembly inference for ONNX OCR models.
 - Source: https://github.com/microsoft/onnxruntime
@@ -49,7 +40,7 @@ The build and browser verify the exact distributed files with SHA-256:
 
 | Runtime file | SHA-256 |
 | --- | --- |
-| `ort-wasm-simd-threaded.wasm` | `040d52ce5066707a10d45cb9500c35e70a9c2fb33c4fb63428da9ae45b956b97` |
+| `ort-wasm-simd-threaded.wasm` | `4b884c203b0fa48d057be3332c65513ff85aa3c5bddd6946acc0fab7ecda001d` |
 | `ppocrv6-det-tiny.onnx` | `f42c0fbd294d95eac1a550e131b277dac97462c8025fa4b6c3cec1b7894bd3d5` |
 | `ppocrv6-rec-tiny.onnx` | `e16e242de5937ad92609223f19bc2aff3727ee40b095f996907c24749bad251b` |
 | `ppocrv6-tiny-dict.txt` | `c5cbe34ef40c29c4df07ed012bf96569cb69a2d2a01a07027e9f13cb832bd9cd` |

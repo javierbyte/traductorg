@@ -1,4 +1,4 @@
-// Benchmarks OCR engine and model combinations in headless Chromium.
+// Benchmarks the OCR engine with different models in Chrome.
 //
 //   node scripts/bench-ocr.mjs [--runs 3] [--threads 4] [--only name,name]
 //
@@ -8,12 +8,11 @@
 // Candidate models that are not part of the app live in fixtures/bench-models/.
 import { spawn } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const require = createRequire(import.meta.url);
-const { chromium } = require("playwright");
+import { chromium } from "@playwright/test";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const PORT = 5190;
@@ -28,7 +27,7 @@ const THREADS = Number(option("threads", 4));
 const ONLY = option("only", "").split(",").filter(Boolean);
 const REC_BATCH = Number(option("rec-batch", 0));
 const REC_MAX_WIDTH = Number(option("rec-max-width", 0));
-const OUT = option("out", "/tmp/claude-0/-home-user-traductorg/dd22e419-3aa1-5b2f-ba11-676deccccae8/scratchpad/bench");
+const OUT = option("out", join(tmpdir(), "traductorg-bench"));
 
 // The app's own models come from public/ocr-assets. Alternatives are read
 // from fixtures/bench-models (ignored by git); download them from the RapidOCR
@@ -47,10 +46,9 @@ const CANDIDATE = {
 const V6_DETECTION = { thresh: 0.2, boxThresh: 0.4, unclipRatio: 1.4 };
 
 const CONFIGS = [
-  { name: "app-native", engine: "native", det: APP.det, rec: APP.rec, dict: APP.dict, detection: V6_DETECTION },
-  { name: "app-esearch", engine: "esearch", det: APP.det, rec: APP.rec, dict: APP.dict },
-  { name: "v6small-det-tiny-rec", engine: "native", det: CANDIDATE.v6DetSmall, rec: APP.rec, dict: APP.dict, detection: V6_DETECTION },
-  { name: "v6small-native", engine: "native", det: CANDIDATE.v6DetSmall, rec: CANDIDATE.v6RecSmall, dict: CANDIDATE.v6Dict, detection: V6_DETECTION },
+  { name: "app", det: APP.det, rec: APP.rec, dict: APP.dict, detection: V6_DETECTION },
+  { name: "v6small-det-tiny-rec", det: CANDIDATE.v6DetSmall, rec: APP.rec, dict: APP.dict, detection: V6_DETECTION },
+  { name: "v6small", det: CANDIDATE.v6DetSmall, rec: CANDIDATE.v6RecSmall, dict: CANDIDATE.v6Dict, detection: V6_DETECTION },
 ];
 
 const SCENES = [
@@ -140,7 +138,13 @@ const server = spawn(
 try {
   await waitForServer(`${ORIGIN}/fixtures/bench.html`);
   await mkdir(OUT, { recursive: true });
-  const browser = await chromium.launch();
+  // Like the browser tests, this runs in Chrome unless another Chromium build
+  // is named in PLAYWRIGHT_EXECUTABLE_PATH.
+  const browser = await chromium.launch(
+    process.env.PLAYWRIGHT_EXECUTABLE_PATH
+      ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH }
+      : { channel: "chrome" },
+  );
   const context = await browser.newContext({
     viewport: { width: 1920, height: 1080 },
     deviceScaleFactor: 1,

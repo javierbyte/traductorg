@@ -3,18 +3,18 @@ import assert from "node:assert/strict";
 
 import {
   AdaptiveOcrPolicy,
+  LineCache,
   LruCache,
   OverlayReplacementPolicy,
   SupersedingQueue,
-  buildAdaptiveParagraphs,
   buildScrollFeatureMap,
   computeOverlayFontSize,
   computeOcrCropRect,
   computeOcrDimensions,
   displayPixelsToSampleRows,
   estimateVerticalShift,
-  fingerprintImageData,
   isFrameActive,
+  lineSignature,
   meanPixelDiff,
   quadToDisplayRect,
   inferOverlayTextAlign,
@@ -51,6 +51,16 @@ test("OCR crop excludes a 16px side and 64px top/bottom display border while ret
     y: 20,
     width: 30,
     height: 40,
+  });
+});
+
+test("OCR crop takes separate top and bottom margins", () => {
+  // A frame already cut below a browser toolbar keeps its first row.
+  assert.deepEqual(computeOcrCropRect(1920, 1000, 1920, 1000, 16, 0, 64), {
+    x: 16,
+    y: 0,
+    width: 1888,
+    height: 936,
   });
 });
 
@@ -114,27 +124,6 @@ test("a replacement translation queue drops the older job's remainder", () => {
   assert.equal(queue.next(), null);
 });
 
-test("paragraph grouping falls back to lines when backgrounds disagree", () => {
-  const first = {
-    text: "Hello",
-    box: [[0, 0], [40, 0], [40, 10], [0, 10]],
-    style: { bg: [255, 255, 255] },
-  };
-  const second = {
-    text: "world",
-    box: [[0, 12], [40, 12], [40, 22], [0, 22]],
-    style: { bg: [250, 250, 250] },
-  };
-  const parse = { ...first, text: "Hello world" };
-  const layout = { columns: [{ parragraphs: [{ src: [first, second], parse }] }] };
-  assert.deepEqual(buildAdaptiveParagraphs([first, second], layout), [
-    { ...parse, lineCount: 2 },
-  ]);
-
-  second.style.bg = [0, 0, 0];
-  assert.equal(buildAdaptiveParagraphs([first, second], layout).length, 2);
-});
-
 test("readable-region selection keeps source order after applying its cap", () => {
   const boxes = [4, 12, 8].map((height, index) => ({
     id: index,
@@ -146,10 +135,47 @@ test("readable-region selection keeps source order after applying its cap", () =
   );
 });
 
-test("image fingerprints are stable and frame diff detects changes", () => {
+function lineCrop(width, paint) {
+  const height = 48;
+  const data = new Uint8ClampedArray(width * height * 4).fill(255);
+  paint((x, y, value) => data.fill(value, (y * width + x) * 4, (y * width + x) * 4 + 3));
+  return { data, width, height };
+}
+
+test("a line is reused through capture noise but not after a character changes", () => {
+  const strokes = (set) => {
+    for (let x = 8; x < 120; x += 12) for (let y = 10; y < 38; y++) set(x, y, 20);
+  };
+  const original = lineCrop(128, strokes);
+  const noisy = lineCrop(128, strokes);
+  for (let i = 0; i < noisy.data.length; i += 4) {
+    const jitter = ((i / 4) % 5) - 2;
+    for (let c = 0; c < 3; c++) noisy.data[i + c] += jitter;
+  }
+  // One more comma-sized mark near the end of the line.
+  const edited = lineCrop(128, (set) => {
+    strokes(set);
+    for (let x = 122; x < 125; x++) for (let y = 34; y < 40; y++) set(x, y, 20);
+  });
+
+  const cache = new LineCache(2);
+  cache.set("100x20", lineSignature(original), { text: "same" });
+  assert.deepEqual(cache.get("100x20", lineSignature(noisy)), { text: "same" });
+  assert.equal(cache.get("100x20", lineSignature(edited)), undefined);
+  assert.equal(cache.get("101x20", lineSignature(original)), undefined);
+
+  cache.set("100x20", lineSignature(edited), { text: "edited" });
+  assert.equal(cache.get("100x20", lineSignature(original)).text, "same");
+  // The cache holds two lines; the one read longest ago makes room.
+  cache.set("90x20", new Uint8Array(4), { text: "third" });
+  assert.equal(cache.size, 2);
+  assert.equal(cache.get("100x20", lineSignature(edited)), undefined);
+  assert.equal(cache.get("100x20", lineSignature(original)).text, "same");
+});
+
+test("frame diff detects changes", () => {
   const a = { data: new Uint8ClampedArray(4 * 4 * 4).fill(10), width: 4, height: 4 };
   const b = { data: new Uint8ClampedArray(a.data), width: 4, height: 4 };
-  assert.equal(fingerprintImageData(a), fingerprintImageData(b));
   assert.equal(meanPixelDiff(a.data, b.data), 0);
   b.data[0] = 250;
   assert.ok(meanPixelDiff(a.data, b.data) > 0);
@@ -295,12 +321,10 @@ test("overlay replacement waits for renderable content and confirms empty views"
   );
 });
 
-test("overlay typography reduces larger text and preserves a readable minimum", () => {
-  assert.equal(computeOverlayFontSize(20, 1), 16.2);
-  assert.equal(computeOverlayFontSize(40, 2), 16.2);
-  assert.equal(computeOverlayFontSize(4, 1), 9);
-  assert.equal(computeOverlayFontSize(200, 1), 162);
-  assert.equal(computeOverlayFontSize(14 / 0.9, 1), 14);
+test("overlay typography sets translations slightly smaller with a readable minimum", () => {
+  assert.ok(Math.abs(computeOverlayFontSize(20) - 18.4) < 1e-9);
+  assert.equal(computeOverlayFontSize(4), 9);
+  assert.equal(computeOverlayFontSize(undefined), 9);
 });
 
 test("overlay alignment centers only obvious single-line text", () => {
@@ -337,7 +361,7 @@ test("quad mapping preserves position and size", () => {
   assert.equal(rect.angle, 0);
 });
 
-test("OCR skew stays horizontal without inflating the font to the bounding height", () => {
+test("OCR skew stays horizontal", () => {
   const rect = quadToDisplayRect(
     [[10, 10], [110, 28], [110, 48], [10, 30]],
     200, 100, 400, 200,
@@ -345,5 +369,4 @@ test("OCR skew stays horizontal without inflating the font to the bounding heigh
   assert.equal(rect.angle, 0);
   assert.ok(Math.abs(rect.width - 200) < 1e-9);
   assert.equal(rect.height, 76);
-  assert.equal(computeOverlayFontSize(rect.boxHeight, 1), 32.4);
 });

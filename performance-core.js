@@ -54,13 +54,30 @@ export function computeOcrDimensions(sourceWidth, sourceHeight, pixelBudget) {
   return { width, height, pixels: width * height };
 }
 
+// How far a frame can be shrunk for text detection, given the font sizes (in
+// frame pixels) read from it so far. The detector finds text comfortably down
+// to about a dozen pixels, and each line is recognized from the full frame
+// anyway, so a frame from a high-density display, where the smallest text is
+// 26 pixels tall, is searched at under half its size. Returns 1 while there
+// is too little text to judge by.
+export function detectionScaleForText(fontSizes, targetFontPixels = 12, minimumLines = 3) {
+  const sizes = (fontSizes || []).filter((size) => size > 0).sort((a, b) => a - b);
+  if (sizes.length < minimumLines) return 1;
+  const small = sizes[Math.floor(sizes.length * 0.1)];
+  return clamp(targetFontPixels / small, 0.3, 1);
+}
+
+// The part of a frame that is searched for text: the frame without a margin
+// on each side, given in pixels of the displayed video. The margins hold
+// window edges, scrollbars and docked bars rather than reading text.
 export function computeOcrCropRect(
   imageWidth,
   imageHeight,
   displayWidth,
   displayHeight,
   horizontalInsetCssPixels = 16,
-  verticalInsetCssPixels = 64,
+  topInsetCssPixels = 64,
+  bottomInsetCssPixels = topInsetCssPixels,
 ) {
   const width = Math.max(1, Math.round(imageWidth) || 1);
   const height = Math.max(1, Math.round(imageHeight) || 1);
@@ -68,17 +85,12 @@ export function computeOcrCropRect(
     return { x: 0, y: 0, width, height };
   }
 
-  const horizontalInset =
-    horizontalInsetCssPixels > 0
-      ? Math.min(horizontalInsetCssPixels, displayWidth / 4)
-      : 0;
-  const verticalInset =
-    verticalInsetCssPixels > 0
-      ? Math.min(verticalInsetCssPixels, displayHeight / 4)
-      : 0;
-  const x = Math.round((horizontalInset / displayWidth) * width);
-  const y = Math.round((verticalInset / displayHeight) * height);
-  return { x, y, width: width - x * 2, height: height - y * 2 };
+  const inset = (cssPixels, displaySize, imageSize) =>
+    cssPixels > 0 ? Math.round((Math.min(cssPixels, displaySize / 4) / displaySize) * imageSize) : 0;
+  const x = inset(horizontalInsetCssPixels, displayWidth, width);
+  const y = inset(topInsetCssPixels, displayHeight, height);
+  const bottom = inset(bottomInsetCssPixels, displayHeight, height);
+  return { x, y, width: width - x * 2, height: height - y - bottom };
 }
 
 export class AdaptiveOcrPolicy {
@@ -266,54 +278,6 @@ export function normalizeText(text) {
   return String(text || "").trim().replace(/\s+/g, " ");
 }
 
-function meanRgbDistance(colors) {
-  if (!colors || colors.length < 2) return 0;
-  const base = colors[0] || [255, 255, 255];
-  let maxDistance = 0;
-  for (let i = 1; i < colors.length; i++) {
-    const color = colors[i] || base;
-    const distance = Math.hypot(
-      color[0] - base[0],
-      color[1] - base[1],
-      color[2] - base[2],
-    );
-    maxDistance = Math.max(maxDistance, distance);
-  }
-  return maxDistance;
-}
-
-export function buildAdaptiveParagraphs(lines, layout, maxColorDistance = 48) {
-  const output = [];
-  const seen = new Set();
-  const identity = (line) =>
-    `${normalizeText(line?.text)}|${(line?.box || []).flat().map((value) => Math.round(value)).join(",")}`;
-
-  for (const column of layout?.columns || []) {
-    for (const paragraph of column.parragraphs || []) {
-      const sourceLines = paragraph.src || [];
-      const compact = sourceLines.length > 1;
-      const consistentColor =
-        meanRgbDistance(sourceLines.map((line) => line.style?.bg)) <=
-        maxColorDistance;
-
-      if (compact && consistentColor && paragraph.parse) {
-        output.push({ ...paragraph.parse, lineCount: sourceLines.length });
-        for (const line of sourceLines) seen.add(identity(line));
-      } else {
-        for (const line of sourceLines) {
-          output.push({ ...line, lineCount: 1 });
-          seen.add(identity(line));
-        }
-      }
-    }
-  }
-
-  for (const line of lines || []) {
-    if (!seen.has(identity(line))) output.push({ ...line, lineCount: 1 });
-  }
-  return output;
-}
-
 function quadHeight(box) {
   if (!box || box.length < 4) return 0;
   return Math.hypot(box[3][0] - box[0][0], box[3][1] - box[0][1]);
@@ -349,32 +313,84 @@ export function selectReadableBoxes(
     .map(({ box }) => box);
 }
 
-export function fingerprintImageData(imageData) {
+// A coarse brightness map of a line crop: the mean of every 4x4 block. Small
+// enough to keep for hundreds of lines, and averaging absorbs the per-pixel
+// noise that screen capture adds, so two crops of the same line compare equal
+// while a single changed character does not.
+export function lineSignature(imageData) {
   const { data, width, height } = imageData;
-  let hashA = 0x811c9dc5;
-  let hashB = 0x9e3779b9;
-  const sampleWidth = Math.min(32, width);
-  const sampleHeight = Math.min(8, height);
+  const columns = width >> 2;
+  const rows = height >> 2;
+  const signature = new Uint8Array(columns * rows);
+  for (let row = 0; row < rows; row++) {
+    for (let column = 0; column < columns; column++) {
+      let total = 0;
+      for (let y = row * 4; y < row * 4 + 4; y++) {
+        let i = (y * width + column * 4) * 4;
+        for (let x = 0; x < 4; x++, i += 4) {
+          total += data[i] * 77 + data[i + 1] * 150 + data[i + 2] * 29;
+        }
+      }
+      signature[row * columns + column] = total >> 12;
+    }
+  }
+  return signature;
+}
 
-  for (let sy = 0; sy < sampleHeight; sy++) {
-    const y = Math.min(height - 1, Math.floor(((sy + 0.5) * height) / sampleHeight));
-    for (let sx = 0; sx < sampleWidth; sx++) {
-      const x = Math.min(width - 1, Math.floor(((sx + 0.5) * width) / sampleWidth));
-      const index = (y * width + x) * 4;
-      const luma =
-        ((data[index] * 77 + data[index + 1] * 150 + data[index + 2] * 29) >>
-          8) &
-        0xff;
-      hashA ^= luma;
-      hashA = Math.imul(hashA, 0x01000193);
-      hashB ^= luma + sx * 17 + sy * 31;
-      hashB = Math.imul(hashB, 0x85ebca6b);
+function signaturesMatch(a, b, tolerance) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const difference = a[i] - b[i];
+    if (difference > tolerance || difference < -tolerance) return false;
+  }
+  return true;
+}
+
+// Remembers what recognized lines said, so a line that is still on screen
+// after a scroll is not recognized again. Lines are filed under a key (their
+// size in pixels) and matched by signature within `tolerance` brightness
+// levels per block. The least recently used entries are dropped first.
+export class LineCache {
+  constructor(maxEntries = 600, tolerance = 12) {
+    this.maxEntries = Math.max(1, maxEntries);
+    this.tolerance = tolerance;
+    this.buckets = new Map();
+    this.entries = new Set();
+  }
+
+  get size() {
+    return this.entries.size;
+  }
+
+  get(key, signature) {
+    for (const entry of this.buckets.get(key) || []) {
+      if (!signaturesMatch(entry.signature, signature, this.tolerance)) continue;
+      this.entries.delete(entry);
+      this.entries.add(entry);
+      return entry.value;
+    }
+    return undefined;
+  }
+
+  set(key, signature, value) {
+    const entry = { key, signature, value };
+    const bucket = this.buckets.get(key);
+    if (bucket) bucket.push(entry);
+    else this.buckets.set(key, [entry]);
+    this.entries.add(entry);
+    while (this.entries.size > this.maxEntries) {
+      const oldest = this.entries.values().next().value;
+      this.entries.delete(oldest);
+      const peers = this.buckets.get(oldest.key);
+      peers.splice(peers.indexOf(oldest), 1);
+      if (!peers.length) this.buckets.delete(oldest.key);
     }
   }
 
-  hashA ^= width;
-  hashB ^= height;
-  return `${width}x${height}:${(hashA >>> 0).toString(16)}${(hashB >>> 0).toString(16)}`;
+  clear() {
+    this.buckets.clear();
+    this.entries.clear();
+  }
 }
 
 export function meanPixelDiff(previous, current) {
@@ -590,14 +606,14 @@ export function quadToDisplayRect(box, imageWidth, imageHeight, displayWidth, di
     height: bottom - top,
     // UI text is horizontal; detector skew must never rotate the overlay.
     angle: 0,
-    boxHeight: Math.hypot(bottomLeft[0] - topLeft[0], bottomLeft[1] - topLeft[1]),
   };
 }
 
-export function computeOverlayFontSize(boxHeight, lineCount = 1) {
-  const sourceLineHeight = Math.max(1, boxHeight / Math.max(1, lineCount || 1));
-  const fontSize = Math.max(9, sourceLineHeight * 0.9);
-  return fontSize > 14 ? fontSize * 0.9 : fontSize;
+// Translations are set a little smaller than the text they cover (given as
+// its font size in display pixels): they are often longer than the original
+// and have to fit the same box. Small text keeps a readable minimum.
+export function computeOverlayFontSize(sourceFontSize) {
+  return Math.max(9, (sourceFontSize || 0) * 0.92);
 }
 
 export function inferOverlayTextAlign(rect, lineCount, displayWidth) {

@@ -16,10 +16,17 @@ import {
   normalizeText,
   quadToDisplayRect,
 } from "./performance-core.js";
+import {
+  WINDOW_CHROME_DEFAULTS,
+  WindowChromeTracker,
+  detectWindowChromeHeight,
+  windowChromeSearchRows,
+} from "./window-chrome.js";
 
 const SAMPLE_WIDTH = 64;
 const SAMPLE_HEIGHT = 200;
 const SAMPLE_INTERVAL_MS = 1000 / 15;
+const WINDOW_CHROME_INTERVAL_MS = 1000;
 const SCROLL_SETTLE_MS = 180;
 const MAX_SCROLL_DEFERRAL_MS = 2500;
 const RESOURCE_GRACE_MS = 60_000;
@@ -48,11 +55,15 @@ function workerErrorMessage(message) {
 }
 
 // The app's single runtime contract: prepare(options), start(),
-// setLanguages(source, target), stop(), and dispose().
+// setLanguages(source, target), setCaptureSurface(kind), stop(), and
+// dispose().
 export class TranslationSession {
-  constructor({ video, overlay }) {
+  // `onCaptureChange` is called when the part of the frame that is shown
+  // and read changes (see captureTop); the page lays the video out again.
+  constructor({ video, overlay, onCaptureChange }) {
     this.video = video;
     this.overlay = overlay;
+    this.onCaptureChange = onCaptureChange || (() => {});
 
     this.boxContainer = document.createElement("div");
     this.boxContainer.className = "translate-boxes";
@@ -86,6 +97,14 @@ export class TranslationSession {
 
     this.displayWidth = 0;
     this.displayHeight = 0;
+    // A shared browser window is cut below its toolbar: the rows of the frame
+    // from captureTop down are all that is displayed, sampled and read, and
+    // the display size and every box refer to that part.
+    this.captureSurface = "";
+    this.captureTop = 0;
+    this.windowChrome = new WindowChromeTracker();
+    this.windowChromeCheckedAt = 0;
+    this.windowChromeCanvas = null;
     this.frameHandle = 0;
     this.frameHandleKind = "";
     this.frameId = 0;
@@ -122,6 +141,7 @@ export class TranslationSession {
       longTasks: 0,
       maxLongTask: 0,
       counts: null,
+      timings: null,
     };
     this.hud = null;
     this.longTaskObserver = null;
@@ -176,6 +196,15 @@ export class TranslationSession {
     this.#ensureWorker();
     this.#ensureTranslator(nextPair, sourceLanguage, targetLanguage);
     if (this.active) this.#startFrameLoop();
+  }
+
+  // What is being shared: "window", "browser" (a tab) or "monitor". Only a
+  // window can carry a browser's toolbar.
+  setCaptureSurface(kind) {
+    this.captureSurface = kind || "";
+    this.#setCaptureTop(0);
+    this.windowChrome.reset();
+    this.windowChromeCheckedAt = 0;
   }
 
   start() {
@@ -450,6 +479,14 @@ export class TranslationSession {
     const startedAt = performance.now();
     this.perf.videoFrames++;
     if (
+      this.captureSurface === "window" &&
+      this.video.readyState >= 2 &&
+      (!this.windowChromeCheckedAt || now - this.windowChromeCheckedAt >= WINDOW_CHROME_INTERVAL_MS)
+    ) {
+      this.windowChromeCheckedAt = now;
+      this.#checkWindowChrome();
+    }
+    if (
       this.active &&
       this.documentVisible &&
       this.workerReady &&
@@ -467,22 +504,56 @@ export class TranslationSession {
     this.#updateRates(now);
   }
 
-  // Grabs the current video frame, optionally scaled to a small sample.
+  // Looks for a browser toolbar at the top of the shared window. When it
+  // appears, goes or changes height, the pipeline restarts on the new cut.
+  #checkWindowChrome() {
+    const width = this.video.videoWidth;
+    const rows = windowChromeSearchRows(this.video.videoHeight);
+    if (!width || rows < 2) return;
+    const columns = Math.min(width, WINDOW_CHROME_DEFAULTS.columns);
+    if (
+      !this.windowChromeCanvas ||
+      this.windowChromeCanvas.width !== columns ||
+      this.windowChromeCanvas.height !== rows
+    ) {
+      this.windowChromeCanvas = new OffscreenCanvas(columns, rows);
+    }
+    const context = this.windowChromeCanvas.getContext("2d", { willReadFrequently: true });
+    context.drawImage(this.video, 0, 0, width, rows, 0, 0, columns, rows);
+    const reading = detectWindowChromeHeight(context.getImageData(0, 0, columns, rows));
+    if (this.windowChrome.update(reading)) this.#setCaptureTop(this.windowChrome.height);
+  }
+
+  #setCaptureTop(top) {
+    if (top === this.captureTop) return;
+    this.captureTop = top;
+    this.#invalidatePipeline();
+    this.#resetWorker();
+    this.#clearResults(true);
+    this.onCaptureChange();
+    this.#updateHud();
+  }
+
+  // Grabs the current video frame below the window's toolbar, optionally
+  // scaled to a small sample.
   async #captureBitmap(resize) {
+    const top = Math.min(this.captureTop, Math.max(0, this.video.videoHeight - 1));
+    const sourceWidth = this.video.videoWidth;
+    const sourceHeight = this.video.videoHeight - top;
     try {
-      return await createImageBitmap(this.video, resize ? {
+      return await createImageBitmap(this.video, 0, top, sourceWidth, sourceHeight, resize ? {
         resizeWidth: resize.width,
         resizeHeight: resize.height,
         resizeQuality: "pixelated",
       } : undefined);
     } catch (_) {
-      const width = resize?.width || this.video.videoWidth;
-      const height = resize?.height || this.video.videoHeight;
+      const width = resize?.width || sourceWidth;
+      const height = resize?.height || sourceHeight;
       const canvas = new OffscreenCanvas(width, height);
       const context = canvas.getContext("2d");
       context.imageSmoothingEnabled = true;
       context.imageSmoothingQuality = resize ? "low" : "high";
-      context.drawImage(this.video, 0, 0, width, height);
+      context.drawImage(this.video, 0, top, sourceWidth, sourceHeight, 0, 0, width, height);
       return canvas.transferToImageBitmap();
     }
   }
@@ -629,6 +700,8 @@ export class TranslationSession {
           frameId,
           displayWidth: this.displayWidth,
           displayHeight: this.displayHeight,
+          // Below a toolbar the frame starts at the page; nothing to skip.
+          topInset: this.captureTop ? 0 : undefined,
           captureScrollBase,
           bitmap,
         },
@@ -652,6 +725,7 @@ export class TranslationSession {
     this.ocrCooldownMs = message.policy.cooldownMs;
     this.nextOcrAt = performance.now() + this.ocrCooldownMs;
     this.perf.counts = message.counts;
+    this.perf.timings = message.timings;
 
     const items = message.items.filter(
       (item) => item.mean >= CONFIDENCE_MIN && isReadableText(item.text),
@@ -826,7 +900,9 @@ export class TranslationSession {
       const key = `${item.id}:${this.pairKey}`;
       const node = this.nodeMap.get(key) || document.createElement("div");
 
-      const fontSize = computeOverlayFontSize(rect.boxHeight, item.lineCount);
+      const fontSize = computeOverlayFontSize(
+        (item.fontSize / this.resultHeight) * this.displayHeight,
+      );
       const textAlign = inferOverlayTextAlign(
         rect,
         item.lineCount,
@@ -987,10 +1063,12 @@ export class TranslationSession {
   #updateHud() {
     if (!this.hud) return;
     const counts = this.perf.counts || {};
+    const timings = this.perf.timings || {};
     this.hud.textContent = [
       `video ${this.perf.videoFps.toFixed(1)} fps  sample ${this.perf.sampleFps.toFixed(1)} fps`,
       `ocr ${this.ocrAverageMs} ms  ${(this.pixelBudget / 1_000_000).toFixed(2)} MP  cooldown ${this.ocrCooldownMs} ms`,
-      `regions ${counts.selected || 0}/${counts.detected || 0}  reused ${counts.reused || 0}`,
+      `detect ${timings.detect || 0} ms  crop ${timings.crop || 0} ms  recognize ${timings.recognize || 0} ms`,
+      `regions ${counts.selected || 0}/${counts.detected || 0}  reused ${counts.reused || 0}  toolbar cut ${this.captureTop} px`,
       `translations ${this.translationCache.size}/${CACHE_MAX}  queued ${this.translationQueue.current ? Math.max(0, this.translationQueue.current.entries.length - this.translationQueue.current.index) : 0}`,
       `main p95 ${percentile(this.perf.handlerTimes, 0.95).toFixed(2)} ms  long tasks ${this.perf.longTasks} (max ${this.perf.maxLongTask.toFixed(1)} ms)`,
       `worker ${this.worker ? (this.workerReady ? "ready" : "loading") : "idle"}  translator ${this.translatorState}`,

@@ -1,8 +1,8 @@
 // Benchmark worker: runs one OCR engine configuration on posted bitmaps and
 // reports per-stage timings alongside the recognized lines. Development only.
-import * as Paddle from "esearch-ocr";
 import * as ort from "onnxruntime-web/wasm";
 
+import { groupLines } from "../layout.js";
 import { createOcrEngine } from "../ocr-engine.js";
 import { resolveLocalAssetUrl } from "../local-assets.js";
 
@@ -10,7 +10,6 @@ ort.env.wasm.wasmPaths = { wasm: resolveLocalAssetUrl("ortWasm").href };
 ort.env.wasm.proxy = false;
 
 let engine = null;
-let config = null;
 
 async function fetchBytes(url) {
   const response = await fetch(url);
@@ -25,36 +24,24 @@ async function fetchText(url) {
 }
 
 async function init(message) {
-  config = message;
   ort.env.wasm.numThreads = message.threads || 4;
   const [detector, recognizer, dictionary] = await Promise.all([
     fetchBytes(message.det),
     fetchBytes(message.rec),
     fetchText(message.dict),
   ]);
-  const sessionOptions = { graphOptimizationLevel: "all", executionMode: "sequential" };
-  if (message.engine === "esearch") {
-    engine = await Paddle.init({
-      det: { input: detector },
-      rec: { input: recognizer, decodeDic: dictionary, optimize: { space: false } },
-      ort,
-      ortOption: sessionOptions,
-    });
-  } else {
-    engine = await createOcrEngine({
-      ort,
-      detector,
-      recognizer,
-      dictionary,
-      sessionOptions,
-      detection: message.detection || {},
-      recognition: message.recognition || {},
-    });
-  }
+  engine = await createOcrEngine({
+    ort,
+    detector,
+    recognizer,
+    dictionary,
+    sessionOptions: { graphOptimizationLevel: "all", executionMode: "sequential" },
+    detection: message.detection || {},
+    recognition: message.recognition || {},
+  });
 }
 
 async function run(message) {
-  message.engine = config.engine;
   const bitmap = message.bitmap;
   const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
   const context = canvas.getContext("2d", { willReadFrequently: true });
@@ -63,14 +50,11 @@ async function run(message) {
   const image = context.getImageData(0, 0, canvas.width, canvas.height);
 
   const t0 = performance.now();
-  let detected = await engine.det(image);
-  if (message.engine !== "esearch" && engine.prepareLines) {
-    detected = engine.prepareLines(canvas, detected);
-  }
+  const detected = engine.prepareLines(image, await engine.det(image), canvas);
   const t1 = performance.now();
   const recognized = await engine.rec(detected);
   const t2 = performance.now();
-  const layout = Paddle.analyzeLayout(recognized.filter((line) => line.mean >= 0.5));
+  const paragraphs = groupLines(recognized.filter((line) => line.mean >= 0.5));
   const t3 = performance.now();
 
   return {
@@ -83,9 +67,7 @@ async function run(message) {
       mean: line.mean,
       box: line.box,
     })),
-    paragraphs: (layout.columns || []).flatMap((column) =>
-      (column.parragraphs || []).map((paragraph) => paragraph.parse?.text || ""),
-    ),
+    paragraphs: paragraphs.map((paragraph) => paragraph.text),
   };
 }
 

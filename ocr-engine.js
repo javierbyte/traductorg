@@ -9,8 +9,14 @@
 
 // A small PP-OCR pipeline on top of ONNX Runtime: DB text detection and
 // CTC text recognition with the preprocessing PaddleOCR trains with.
-// Everything runs on typed arrays, crops are cut in one canvas pass each,
-// and recognition runs in width-sorted batches instead of one line at a time.
+// Everything runs on typed arrays, and recognition runs in width-sorted
+// batches instead of one line at a time.
+//
+// The text it reads is screen text: horizontal, sharp, on a flat background.
+// So each detected box is snapped to the pixels of its text before it is cut
+// out. The same line then yields the same crop wherever it sits on screen,
+// whatever the detector's box looked like, which lets callers recognize a
+// line once and reuse the result while the page scrolls.
 
 const DETECTION_DEFAULTS = Object.freeze({
   thresh: 0.2,
@@ -29,8 +35,14 @@ const RECOGNITION_DEFAULTS = Object.freeze({
   // Lines only share a batch while the padding they need stays small.
   batchWidthSpread: 1.25,
   maxWidth: 4096,
-  trimPx: 4,
+  // Margin kept around the snapped text, as a share of its height.
+  padX: 0.1,
+  padY: 0.2,
 });
+
+// A pixel is text when its color is this far from the background (summed
+// over the three channels).
+const INK_DISTANCE = 96;
 
 const STRIDE = 32;
 
@@ -311,14 +323,20 @@ function colorDistance(a, b) {
   return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 }
 
-// Dominant background and text colors of a line crop from a coarse histogram.
-export function estimateLineStyle(image) {
-  const { data, width, height } = image;
+// Dominant background and text colors of a frame region, from a coarse
+// histogram of about a thousand evenly spread pixels.
+export function estimateRegionStyle(image, rect) {
+  const { data, width } = image;
+  const rectWidth = rect.x1 - rect.x0;
+  const rectHeight = rect.y1 - rect.y0;
+  const step = Math.max(1, Math.round(Math.sqrt((rectWidth * rectHeight) / 1200)));
   const histogram = new Map();
-  const step = Math.max(1, Math.floor((width * height) / 1500));
-  for (let i = 0, pixel = 0; i < data.length; i += 4 * step, pixel += step) {
-    const key = quantize(data[i], data[i + 1], data[i + 2]);
-    histogram.set(key, (histogram.get(key) || 0) + 1);
+  for (let y = rect.y0 + (step >> 1); y < rect.y1; y += step) {
+    let i = (y * width + rect.x0 + (step >> 1)) * 4;
+    for (let x = rect.x0 + (step >> 1); x < rect.x1; x += step, i += step * 4) {
+      const key = quantize(data[i], data[i + 1], data[i + 2]);
+      histogram.set(key, (histogram.get(key) || 0) + 1);
+    }
   }
   const ranked = [...histogram.entries()].sort((a, b) => b[1] - a[1]);
   const bg = ranked.length ? unquantize(ranked[0][0]) : [255, 255, 255];
@@ -334,53 +352,86 @@ export function estimateLineStyle(image) {
   return { bg, text };
 }
 
-// Shrinks a quad toward its ink by up to `limit` source pixels per side.
-export function trimQuadToInk(quad, image, bg, scale, limit) {
+export function quadBounds(quad, width, height) {
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (const [x, y] of quad) {
+    if (x < x0) x0 = x;
+    if (x > x1) x1 = x;
+    if (y < y0) y0 = y;
+    if (y > y1) y1 = y;
+  }
+  x0 = Math.min(width - 1, Math.max(0, Math.floor(x0)));
+  y0 = Math.min(height - 1, Math.max(0, Math.floor(y0)));
+  x1 = Math.min(width, Math.max(x0 + 1, Math.ceil(x1)));
+  y1 = Math.min(height, Math.max(y0 + 1, Math.ceil(y1)));
+  return { x0, y0, x1, y1 };
+}
+
+// Moves each side of a region onto the outermost row or column of its text:
+// inward over empty margin, outward (a little) where the detector cut into a
+// glyph. Returns null when the region holds no text pixels at all.
+export function snapRectToInk(image, rect, bg) {
   const { data, width, height } = image;
-  const inked = (x, y) => {
-    const i = (y * width + x) * 4;
-    return (
-      Math.abs(data[i] - bg[0]) + Math.abs(data[i + 1] - bg[1]) + Math.abs(data[i + 2] - bg[2]) >
-      96
-    );
+  const [bgR, bgG, bgB] = bg;
+  const ink = (i) =>
+    Math.abs(data[i] - bgR) + Math.abs(data[i + 1] - bgG) + Math.abs(data[i + 2] - bgB) >
+    INK_DISTANCE;
+  const rowHasInk = (y, x0, x1) => {
+    for (let i = (y * width + x0) * 4, end = (y * width + x1) * 4; i < end; i += 4) {
+      if (ink(i)) return true;
+    }
+    return false;
   };
-  let top = 0;
-  let bottom = height - 1;
-  let left = 0;
-  let right = width - 1;
-  const maxCrop = Math.floor(limit / Math.max(scale, 1e-6));
-  outerTop: for (; top < Math.min(maxCrop, height - 1); top++) {
-    for (let x = 0; x < width; x++) if (inked(x, top)) break outerTop;
+  const columnHasInk = (x, y0, y1) => {
+    for (let i = (y0 * width + x) * 4, end = (y1 * width + x) * 4; i < end; i += width * 4) {
+      if (ink(i)) return true;
+    }
+    return false;
+  };
+
+  let { x0, y0, x1, y1 } = rect;
+  const size = y1 - y0;
+  const growY = Math.max(2, Math.round(size * 0.35));
+  const growX = Math.max(2, Math.round(size * 0.6));
+
+  const snapRows = () => {
+    if (rowHasInk(y0, x0, x1)) {
+      for (let grown = 0; grown < growY && y0 > 0 && rowHasInk(y0 - 1, x0, x1); grown++) y0--;
+    } else {
+      while (y0 < y1 - 1 && !rowHasInk(y0, x0, x1)) y0++;
+      if (y0 === y1 - 1 && !rowHasInk(y0, x0, x1)) return false;
+    }
+    if (rowHasInk(y1 - 1, x0, x1)) {
+      for (let grown = 0; grown < growY && y1 < height && rowHasInk(y1, x0, x1); grown++) y1++;
+    } else {
+      while (y1 - 1 > y0 && !rowHasInk(y1 - 1, x0, x1)) y1--;
+    }
+    return true;
+  };
+
+  if (!snapRows()) return null;
+  if (columnHasInk(x0, y0, y1)) {
+    for (let grown = 0; grown < growX && x0 > 0 && columnHasInk(x0 - 1, y0, y1); grown++) x0--;
+  } else {
+    while (x0 < x1 - 1 && !columnHasInk(x0, y0, y1)) x0++;
   }
-  outerBottom: for (; bottom > Math.max(top, height - 1 - maxCrop); bottom--) {
-    for (let x = 0; x < width; x++) if (inked(x, bottom)) break outerBottom;
+  if (columnHasInk(x1 - 1, y0, y1)) {
+    for (let grown = 0; grown < growX && x1 < width && columnHasInk(x1, y0, y1); grown++) x1++;
+  } else {
+    while (x1 - 1 > x0 && !columnHasInk(x1 - 1, y0, y1)) x1--;
   }
-  outerLeft: for (; left < Math.min(maxCrop, width - 1); left++) {
-    for (let y = top; y <= bottom; y++) if (inked(left, y)) break outerLeft;
-  }
-  outerRight: for (; right > Math.max(left, width - 1 - maxCrop); right--) {
-    for (let y = top; y <= bottom; y++) if (inked(right, y)) break outerRight;
-  }
-  const dyT = Math.max(0, top - 1) * scale;
-  const dyB = Math.max(0, height - 1 - bottom - 1) * scale;
-  const dxL = Math.max(0, left - 1) * scale;
-  const dxR = Math.max(0, width - 1 - right - 1) * scale;
-  if (!dyT && !dyB && !dxL && !dxR) return quad;
-  const [p0, p1, p2, p3] = quad;
-  const ux = (p1[0] - p0[0]) / Math.max(1e-6, Math.hypot(p1[0] - p0[0], p1[1] - p0[1]));
-  const uy = (p1[1] - p0[1]) / Math.max(1e-6, Math.hypot(p1[0] - p0[0], p1[1] - p0[1]));
-  const vx = (p3[0] - p0[0]) / Math.max(1e-6, Math.hypot(p3[0] - p0[0], p3[1] - p0[1]));
-  const vy = (p3[1] - p0[1]) / Math.max(1e-6, Math.hypot(p3[0] - p0[0], p3[1] - p0[1]));
-  return [
-    [p0[0] + ux * dxL + vx * dyT, p0[1] + uy * dxL + vy * dyT],
-    [p1[0] - ux * dxR + vx * dyT, p1[1] - uy * dxR + vy * dyT],
-    [p2[0] - ux * dxR - vx * dyB, p2[1] - uy * dxR - vy * dyB],
-    [p3[0] + ux * dxL - vx * dyB, p3[1] + uy * dxL - vy * dyB],
-  ];
+  // The rows were measured over the detector's width; settle them on the
+  // final one so the result does not depend on where the box started.
+  snapRows();
+  return { x0, y0, x1, y1 };
 }
 
 // --- Recognition decoding -------------------------------------------------
 
+// Greedy CTC decoding of one line from the recognizer's per-step softmax.
 export function decodeCtc(logits, offset, steps, classes, dictionary) {
   let text = "";
   let total = 0;
@@ -390,11 +441,16 @@ export function decodeCtc(logits, offset, steps, classes, dictionary) {
     const base = offset + t * classes;
     let best = 0;
     let bestValue = logits[base];
-    for (let c = 1; c < classes; c++) {
-      const value = logits[base + c];
-      if (value > bestValue) {
-        bestValue = value;
-        best = c;
+    // Each step is a probability distribution, so a class above one half has
+    // already won. Most steps are a confident blank and end here.
+    if (bestValue <= 0.5) {
+      for (let c = 1; c < classes; c++) {
+        const value = logits[base + c];
+        if (value > bestValue) {
+          bestValue = value;
+          best = c;
+          if (value > 0.5) break;
+        }
       }
     }
     if (best !== 0 && best !== previous) {
@@ -427,18 +483,15 @@ export async function createOcrEngine({
   ]);
 
   let sourceCanvas = null;
-  let sourceContext = null;
   let cropCanvas = null;
   let cropContext = null;
 
-  // Canvases and bitmaps are drawn from directly; pixel data is uploaded once.
-  function sourceFor(image) {
-    if (!(image instanceof ImageData)) return image;
-    if (!sourceCanvas || sourceCanvas.width !== image.width || sourceCanvas.height !== image.height) {
-      sourceCanvas = new OffscreenCanvas(image.width, image.height);
-      sourceContext = sourceCanvas.getContext("2d");
+  // Crops are scaled by the canvas; pixel data without one is uploaded once.
+  function canvasFor(pixels) {
+    if (!sourceCanvas || sourceCanvas.width !== pixels.width || sourceCanvas.height !== pixels.height) {
+      sourceCanvas = new OffscreenCanvas(pixels.width, pixels.height);
     }
-    sourceContext.putImageData(image, 0, 0);
+    sourceCanvas.getContext("2d").putImageData(pixels, 0, 0);
     return sourceCanvas;
   }
 
@@ -456,22 +509,35 @@ export async function createOcrEngine({
     return cropContext;
   }
 
-  // Cuts one line out of the source canvas at the recognizer's height.
-  function cropLine(source, quad) {
+  // Cuts an upright region out of the frame at the recognizer's height.
+  function cropRect(canvas, rect) {
+    const width = rect.x1 - rect.x0;
+    const height = rect.y1 - rect.y0;
+    const targetHeight = recognitionConfig.height;
+    const targetWidth = Math.max(
+      8,
+      Math.min(recognitionConfig.maxWidth, Math.round((width * targetHeight) / height)),
+    );
+    const context = cropContextFor(targetWidth, targetHeight);
+    context.drawImage(canvas, rect.x0, rect.y0, width, height, 0, 0, targetWidth, targetHeight);
+    return context.getImageData(0, 0, targetWidth, targetHeight);
+  }
+
+  // Cuts a rotated or vertical quad out of the frame at the recognizer's
+  // height. Rare on screen; kept so such text is still read.
+  function cropQuad(canvas, quad) {
     let [p0, p1, , p3] = quad;
     let width = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]);
     let height = Math.hypot(p3[0] - p0[0], p3[1] - p0[1]);
-    const rotated = height > width * 1.5;
-    if (rotated) {
+    if (height > width * 1.5) {
       // Vertical lines are read rotated, like PaddleOCR does.
       [p0, p1, p3] = [p3, p0, quad[2]];
       [width, height] = [height, width];
     }
     const targetHeight = recognitionConfig.height;
-    const scale = targetHeight / Math.max(1, height);
     const targetWidth = Math.max(
       8,
-      Math.min(recognitionConfig.maxWidth, Math.round(width * scale)),
+      Math.min(recognitionConfig.maxWidth, Math.round((width * targetHeight) / Math.max(1, height))),
     );
     const context = cropContextFor(targetWidth, targetHeight);
     const ax = (p1[0] - p0[0]) / Math.max(1, width);
@@ -494,13 +560,18 @@ export async function createOcrEngine({
       -(ia * p0[0] + ic * p0[1]) * sx,
       -(ib * p0[0] + id * p0[1]) * sy,
     );
-    context.drawImage(source, 0, 0);
+    context.drawImage(canvas, 0, 0);
     context.resetTransform();
-    return {
-      image: context.getImageData(0, 0, targetWidth, targetHeight),
-      scale: 1 / scale,
-      rotated,
-    };
+    return context.getImageData(0, 0, targetWidth, targetHeight);
+  }
+
+  // Screen text is upright: its quad is at most slightly skewed and wider
+  // than tall (or about square, for a single character).
+  function isUpright(quad) {
+    const [p0, p1, , p3] = quad;
+    const width = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]);
+    const height = Math.hypot(p3[0] - p0[0], p3[1] - p0[1]);
+    return height <= width * 1.5 && Math.abs(p1[1] - p0[1]) <= Math.max(2, height * 0.25);
   }
 
   // Finds text lines in an ImageData; boxes are quads in its pixel space.
@@ -523,19 +594,53 @@ export async function createOcrEngine({
     return boxes;
   }
 
-  // Cuts each detected quad out of `source` (an ImageData, canvas or bitmap in
-  // the same pixel space as the quads) as a recognizer-height crop, with its
-  // dominant colors and a box tightened to the visible ink.
-  function prepareLines(source, boxes) {
-    const drawable = sourceFor(source);
+  // Turns detected quads into lines ready for recognition. `pixels` is the
+  // frame's ImageData and `canvas` (optional) a canvas holding the same
+  // image, both in the pixel space of the quads. Each line carries its crop
+  // at recognizer height, its dominant colors, the box of its text, and
+  // `ink`, the pixel size of that text: equal crops of equal `ink` size are
+  // the same line. `clipped` marks a line cut off by the frame's edge.
+  function prepareLines(pixels, boxes, canvas = canvasFor(pixels)) {
     const lines = [];
     for (const { box, score } of boxes) {
-      const { image: crop, scale, rotated } = cropLine(drawable, box);
-      const style = estimateLineStyle(crop);
-      const tightened = rotated
-        ? box
-        : trimQuadToInk(box, crop, style.bg, scale, recognitionConfig.trimPx);
-      lines.push({ box: tightened, img: crop, style, score });
+      const bounds = quadBounds(box, pixels.width, pixels.height);
+      if (!isUpright(box)) {
+        lines.push({
+          box,
+          img: cropQuad(canvas, box),
+          style: estimateRegionStyle(pixels, bounds),
+          score,
+          ink: null,
+        });
+        continue;
+      }
+      const background = estimateRegionStyle(pixels, bounds).bg;
+      const text = snapRectToInk(pixels, bounds, background);
+      if (!text) continue;
+      const inkWidth = text.x1 - text.x0;
+      const inkHeight = text.y1 - text.y0;
+      const padX = Math.max(2, Math.round(inkHeight * recognitionConfig.padX));
+      const padY = Math.max(1, Math.round(inkHeight * recognitionConfig.padY));
+      const padded = {
+        x0: Math.max(0, text.x0 - padX),
+        y0: Math.max(0, text.y0 - padY),
+        x1: Math.min(pixels.width, text.x1 + padX),
+        y1: Math.min(pixels.height, text.y1 + padY),
+      };
+      lines.push({
+        box: [
+          [text.x0, text.y0],
+          [text.x1, text.y0],
+          [text.x1, text.y1],
+          [text.x0, text.y1],
+        ],
+        img: cropRect(canvas, padded),
+        style: estimateRegionStyle(pixels, text),
+        score,
+        ink: { width: inkWidth, height: inkHeight },
+        // Text that runs into the top or bottom of the frame is cut off.
+        clipped: text.y0 === 0 || text.y1 === pixels.height,
+      });
     }
     return lines;
   }

@@ -7,22 +7,22 @@
 // without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
 // PARTICULAR PURPOSE. See the LICENSE file distributed with this source.
 
-import { analyzeLayout } from "esearch-ocr";
 import * as ort from "onnxruntime-web/wasm";
 
+import { groupLines } from "./layout.js";
 import { createOcrEngine } from "./ocr-engine.js";
 import {
   AdaptiveOcrPolicy,
-  LruCache,
+  LineCache,
   MOTION_DEFAULTS,
-  buildAdaptiveParagraphs,
   buildScrollFeatureMap,
   computeOcrCropRect,
   computeOcrDimensions,
+  detectionScaleForText,
   displayPixelsToSampleRows,
   estimateVerticalShift,
-  fingerprintImageData,
   isFrameActive,
+  lineSignature,
   meanPixelDiff,
   selectReadableBoxes,
   stableItemKey,
@@ -30,7 +30,8 @@ import {
 import { fetchVerifiedAsset, resolveLocalAssetUrl } from "./local-assets.js";
 
 // Worker protocol: init/reset/dispose carry sessionId + frameId 0; sample and
-// ocr carry monotonically increasing frameId values and transferable bitmaps.
+// ocr carry monotonically increasing frameId values and transferable bitmaps,
+// with displayWidth/displayHeight giving the size the bitmap is shown at.
 // Responses are status, ready, motion, ocr-result, ocr-busy, or structured
 // error objects with the same session/frame identity as their request.
 
@@ -41,6 +42,11 @@ const MIN_LINE_CSS_HEIGHT = 6;
 const MAX_LINES = 120;
 // Lines the recognizer is unsure about are dropped before translation.
 const TEXT_SCORE_MIN = 0.5;
+// Detection is sized for the smallest text of the last few passes; every so
+// often a pass runs at the full budget so smaller text that has since
+// appeared is found.
+const TEXT_SCALE_HISTORY = 3;
+const FULL_DETECTION_EVERY = 8;
 
 ort.env.wasm.wasmPaths = { wasm: resolveLocalAssetUrl("ortWasm").href };
 ort.env.wasm.proxy = false;
@@ -63,9 +69,11 @@ let previousSample = null;
 let previousFeatures = null;
 let latestSample = null;
 let lastOcrSample = null;
+let textScales = [];
+let passesSinceFullDetection = 0;
 
 const policy = new AdaptiveOcrPolicy();
-const recognitionCache = new LruCache(500);
+const recognitionCache = new LineCache(600);
 
 function send(type, payload = {}) {
   self.postMessage({ type, ...payload });
@@ -124,7 +132,7 @@ function bitmapToSampleImageData(bitmap) {
 // Text is detected on a size-limited copy of the frame, but each line is cut
 // for recognition from the full-resolution capture, so small text on dense
 // displays stays legible to the recognizer.
-function prepareOcrImages(bitmap, displayWidth, displayHeight) {
+function prepareOcrImages(bitmap, displayWidth, displayHeight, topInset) {
   const frameWidth = bitmap.width;
   const frameHeight = bitmap.height;
   const crop = computeOcrCropRect(
@@ -133,9 +141,19 @@ function prepareOcrImages(bitmap, displayWidth, displayHeight) {
     displayWidth,
     displayHeight,
     OCR_SIDE_CROP_PX,
+    topInset,
     OCR_TOP_BOTTOM_CROP_PX,
   );
-  const detection = computeOcrDimensions(crop.width, crop.height, policy.pixelBudget);
+  const textScale = textScales.length ? Math.max(...textScales) : 1;
+  const fullDetection = textScale >= 1 || passesSinceFullDetection >= FULL_DETECTION_EVERY;
+  passesSinceFullDetection = fullDetection ? 0 : passesSinceFullDetection + 1;
+  const detection = computeOcrDimensions(
+    crop.width,
+    crop.height,
+    fullDetection
+      ? policy.pixelBudget
+      : Math.min(policy.pixelBudget, crop.width * crop.height * textScale * textScale),
+  );
 
   [frameCanvas, frameContext] = ensureCanvas(frameCanvas, frameContext, crop.width, crop.height);
   frameContext.drawImage(bitmap, crop.x, crop.y, crop.width, crop.height, 0, 0, crop.width, crop.height);
@@ -156,6 +174,7 @@ function prepareOcrImages(bitmap, displayWidth, displayHeight) {
     frameWidth,
     frameHeight,
     frame: frameContext.getImageData(0, 0, crop.width, crop.height),
+    frameCanvas,
     detection: detectionContext.getImageData(0, 0, detection.width, detection.height),
   };
 }
@@ -166,6 +185,8 @@ async function handleInit(message) {
   previousFeatures = null;
   latestSample = null;
   lastOcrSample = null;
+  textScales = [];
+  passesSinceFullDetection = 0;
 
   if (engine) {
     send("ready", {
@@ -222,6 +243,8 @@ function handleReset(message) {
   previousFeatures = null;
   latestSample = null;
   lastOcrSample = null;
+  textScales = [];
+  passesSinceFullDetection = 0;
 }
 
 function handleSample(message) {
@@ -287,12 +310,16 @@ async function handleOcr(message) {
       return;
     }
 
-    const { crop, frameWidth, frameHeight, frame, detection } = prepareOcrImages(
+    const { crop, frameWidth, frameHeight, frame, frameCanvas, detection } = prepareOcrImages(
       message.bitmap,
       message.displayWidth,
       message.displayHeight,
+      // A frame whose window toolbar was already cut off starts at the page.
+      message.topInset ?? OCR_TOP_BOTTOM_CROP_PX,
     );
+    const preparedAt = performance.now();
     const detected = await activeEngine.det(detection);
+    const detectedAt = performance.now();
     const scaleX = frame.width / detection.width;
     const scaleY = frame.height / detection.height;
     const readable = selectReadableBoxes(
@@ -305,49 +332,48 @@ async function handleOcr(message) {
       MIN_LINE_CSS_HEIGHT,
       MAX_LINES,
     );
-    const selected = activeEngine.prepareLines(frame, readable);
+    // Half a line read as text is noise, so lines cut off by the frame's
+    // edge wait until they scroll into view.
+    const selected = activeEngine
+      .prepareLines(frame, readable, frameCanvas)
+      .filter((line) => !line.clipped);
 
+    // A line that was read before, anywhere on screen, keeps its text.
     const lines = new Array(selected.length);
     const missing = [];
-    const missingIndexes = [];
-    let reused = 0;
-
+    const missingSlots = [];
     for (let index = 0; index < selected.length; index++) {
       const line = selected[index];
-      const cacheKey = fingerprintImageData(line.img);
-      const cached = recognitionCache.get(cacheKey);
+      const signature = line.ink ? lineSignature(line.img) : null;
+      const key = line.ink ? `${line.ink.width}x${line.ink.height}` : "";
+      const cached = signature && recognitionCache.get(key, signature);
       if (cached) {
-        lines[index] = { ...cached, box: line.box, style: line.style };
-        reused++;
+        lines[index] = { ...cached, box: line.box, style: line.style, score: line.score };
       } else {
         missing.push(line);
-        missingIndexes.push({ index, cacheKey });
+        missingSlots.push({ index, key, signature });
       }
     }
+    const croppedAt = performance.now();
 
     if (missing.length) {
       const recognized = await activeEngine.rec(missing);
       for (let i = 0; i < recognized.length; i++) {
-        const target = missingIndexes[i];
+        const { index, key, signature } = missingSlots[i];
         const { text, mean } = recognized[i];
-        lines[target.index] = recognized[i];
-        recognitionCache.set(target.cacheKey, { text, mean });
+        lines[index] = recognized[i];
+        if (signature) recognitionCache.set(key, signature, { text, mean });
       }
     }
+    const recognizedAt = performance.now();
 
     const confidentLines = lines.filter((line) => line && line.mean >= TEXT_SCORE_MIN);
-    const layout = analyzeLayout(confidentLines);
-    const items = buildAdaptiveParagraphs(confidentLines, layout).map((item) => {
+    const items = groupLines(confidentLines).map((item) => {
       const box = item.box.map(([x, y]) => [x + crop.x, y + crop.y]);
-      return {
-        text: item.text,
-        mean: item.mean,
-        box,
-        style: item.style,
-        lineCount: item.lineCount,
-        id: stableItemKey({ ...item, box }),
-      };
+      return { ...item, box, id: stableItemKey({ ...item, box }) };
     });
+    textScales.push(detectionScaleForText(items.map((item) => item.fontSize)));
+    if (textScales.length > TEXT_SCALE_HISTORY) textScales.shift();
     const durationMs = performance.now() - startedAt;
     const nextPolicy = policy.record(durationMs);
     if (sampleAtCapture) lastOcrSample = sampleAtCapture;
@@ -366,7 +392,15 @@ async function handleOcr(message) {
         detected: detected.length,
         selected: selected.length,
         recognized: missing.length,
-        reused,
+        reused: selected.length - missing.length,
+      },
+      detectionPixels: detection.width * detection.height,
+      timings: {
+        prepare: Math.round(preparedAt - startedAt),
+        detect: Math.round(detectedAt - preparedAt),
+        crop: Math.round(croppedAt - detectedAt),
+        recognize: Math.round(recognizedAt - croppedAt),
+        group: Math.round(performance.now() - recognizedAt),
       },
     });
   } catch (error) {

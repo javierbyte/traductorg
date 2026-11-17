@@ -12,7 +12,7 @@
 export const OCR_ASSET_MANIFEST = Object.freeze({
   ortWasm: Object.freeze({
     path: "ocr-assets/ort-wasm-simd-threaded.wasm",
-    sha256: "040d52ce5066707a10d45cb9500c35e70a9c2fb33c4fb63428da9ae45b956b97",
+    sha256: "4b884c203b0fa48d057be3332c65513ff85aa3c5bddd6946acc0fab7ecda001d",
     format: "binary",
   }),
   detector: Object.freeze({

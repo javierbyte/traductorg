@@ -4,11 +4,14 @@ import test from "node:test";
 import {
   decodeCtc,
   detectionBoxes,
+  estimateRegionStyle,
   minAreaRect,
   normalizeImageData,
   orderQuad,
   parseDictionary,
+  quadBounds,
   roundUpToStride,
+  snapRectToInk,
 } from "../ocr-engine.js";
 
 test("dictionaries gain the CTC blank and the trailing space class", () => {
@@ -121,4 +124,53 @@ test("low-confidence blobs are rejected by the box threshold", () => {
   }
   assert.equal(detectionBoxes(pred, stride, 64, 32, { thresh: 0.2, boxThresh: 0.4 }).length, 0);
   assert.equal(detectionBoxes(pred, stride, 64, 32, { thresh: 0.2, boxThresh: 0.25 }).length, 1);
+});
+
+// A white frame with dark "text" in the given rectangles.
+function frameWith(width, height, marks) {
+  const data = new Uint8ClampedArray(width * height * 4).fill(255);
+  for (const [x0, y0, x1, y1] of marks) {
+    for (let y = y0; y < y1; y++) data.fill(30, (y * width + x0) * 4, (y * width + x1) * 4);
+  }
+  for (let i = 3; i < data.length; i += 4) data[i] = 255;
+  return { data, width, height };
+}
+
+test("a region's style is its background and the color that stands out from it", () => {
+  const frame = frameWith(200, 60, [[20, 20, 60, 40], [80, 20, 130, 40]]);
+  const style = estimateRegionStyle(frame, { x0: 10, y0: 10, x1: 190, y1: 50 });
+  assert.ok(style.bg.every((value) => value > 240));
+  assert.ok(style.text.every((value) => value < 48));
+});
+
+test("boxes snap to their text from any starting box", () => {
+  // Two words on one line, and the top of another line just below.
+  const frame = frameWith(300, 100, [[40, 30, 120, 50], [130, 30, 220, 50], [40, 62, 220, 80]]);
+  const text = { x0: 40, y0: 30, x1: 220, y1: 50 };
+  const white = [255, 255, 255];
+  // Too loose, too tight, and shifted: all settle on the same rectangle.
+  for (const start of [
+    { x0: 30, y0: 22, x1: 232, y1: 58 },
+    { x0: 46, y0: 34, x1: 214, y1: 47 },
+    { x0: 36, y0: 27, x1: 215, y1: 55 },
+  ]) {
+    assert.deepEqual(snapRectToInk(frame, start, white), text);
+  }
+  // It grows back over a glyph the detector cut into, but not across a gap.
+  assert.deepEqual(snapRectToInk(frame, { x0: 134, y0: 34, x1: 216, y1: 47 }, white), {
+    x0: 130,
+    y0: 30,
+    x1: 220,
+    y1: 50,
+  });
+  assert.equal(snapRectToInk(frame, { x0: 230, y0: 5, x1: 290, y1: 25 }, white), null);
+});
+
+test("quad bounds are whole pixels inside the frame", () => {
+  assert.deepEqual(quadBounds([[-3.2, 4.6], [50.4, 5.1], [50.2, 20.7], [-3, 20.2]], 40, 30), {
+    x0: 0,
+    y0: 4,
+    x1: 40,
+    y1: 21,
+  });
 });
